@@ -108,6 +108,35 @@ Two modes, depending on what's loaded:
 Either way the output is enhanced LRC, so you get per-word highlighting, and
 **Save .lrc** writes it out so you never have to run it twice.
 
+## Refine words
+
+**Auto-sync** gets the *lines* right. **Refine words** gets the *words inside them*
+right — it's a separate button, enabled once you have a track plus lyrics that already
+carry line timings (from LRCLIB, your own `.lrc`, or a previous Auto-sync).
+
+A line-level `.lrc` tells the renderer when a line starts and nothing more, so the
+karaoke highlight just sweeps across it at a constant rate. That reads as slightly-off
+on every line: the sweep drifts ahead of a held syllable and lags behind a fast one.
+Refine adds real per-word timestamps so the highlight tracks the singing.
+
+This is a far easier problem than aligning a whole song, which is why it works better.
+Each line supplies its own search window — a few seconds instead of five minutes — so
+the model only has to place a handful of words, and a mistake on one line cannot leak
+into the next.
+
+**It cannot break what you already have.** Your line timestamps are treated as
+authoritative and never moved. The first word of each line takes the line's own time,
+no word may leave its line's interval, and any line the model can't anchor falls back
+to the even spread the renderer already does today. Worst case a line is unchanged;
+best case it snaps to the vocal.
+
+On a full track against LRCLIB's line timings: all 64 line starts preserved exactly,
+23% of words anchored, and 36 of 60 multi-word lines came out with genuinely
+non-uniform word timing. The remaining 24 kept the even spread — no worse than before.
+
+Hit **Save .lrc** afterwards and you have an enhanced `.lrc` you never need to
+regenerate.
+
 ### Interpolating in singing time, not wall-clock time
 
 Whisper anchors maybe a third of the words on a dense mix. The other two thirds have
@@ -184,6 +213,9 @@ Everything is also on the control panel: palette, intensity, per-group icon togg
 
 Shift-clicking **Auto-sync** skips the LRCLIB lookup and goes straight to on-device
 transcription — useful when the online match is for a different cut of the song.
+
+**Refine words** is enabled once you have a track plus lyrics that already carry line
+timings; it keeps those timings and adds per-word timestamps inside them.
 
 ## Visual style
 

@@ -640,6 +640,15 @@ function monotonic(words) {
   return words;
 }
 
+function tokens(s) {
+  var parts = String(s).split(/\s+/), out = [];
+  for (var p = 0; p < parts.length; p++) {
+    var n = normWord(parts[p]);
+    if (n) out.push({ raw: parts[p], n: n });
+  }
+  return out;
+}
+
 /* Split reference lyric text into lines of tokens, dropping [tags] and the
    section markers ("Chorus:", "[Verse 2]") that annotated lyric dumps carry. */
 function refLines(text) {
@@ -649,12 +658,7 @@ function refLines(text) {
     var s = raw[i].replace(/\[[^\]]*\]/g, '').trim();
     if (!s) continue;
     if (/^\(?(intro|verse|chorus|bridge|outro|refrain|hook|pre-?chorus|interlude|instrumental)\b[^a-z]*\)?:?$/i.test(s)) continue;
-    var parts = s.split(/\s+/);
-    var toks = [];
-    for (var p = 0; p < parts.length; p++) {
-      var n = normWord(parts[p]);
-      if (n) toks.push({ raw: parts[p], n: n });
-    }
+    var toks = tokens(s);
     if (toks.length) lines.push({ text: s, toks: toks });
   }
   return lines;
@@ -870,6 +874,117 @@ function alignToLyrics(words, lyricText, clock, duration) {
   return { lines: out, matched: pairs.length, total: flat.length };
 }
 
+/* ------------------------------------------------------- refining timings */
+
+/* Place the words of one already-timed line inside its own interval.
+ *
+ * The line's own timestamp is authoritative — the first word takes it, and no
+ * word may leave [start, end). Anything the model did not anchor falls back to
+ * a spread across the singing in that interval, which is what the renderer
+ * already does today. So this can sharpen a line but never break it.
+ */
+function fillWithin(slots, start, end, clock) {
+  var n = slots.length, i;
+  if (!n) return;
+
+  // Anchors must sit inside the line and never step backwards.
+  var lastT = start;
+  for (i = 0; i < n; i++) {
+    if (slots[i].t == null) continue;
+    var t = Math.min(Math.max(slots[i].t, start), end - 0.05);
+    if (t < lastT) t = lastT;
+    slots[i].t = t;
+    lastT = t;
+  }
+  slots[0].t = start;
+
+  var known = [];
+  for (i = 0; i < n; i++) if (slots[i].t != null) known.push(i);
+
+  function spread(i0, t0, i1, t1) {
+    var v0 = clock.at(t0), v1 = clock.at(t1), span = i1 - i0;
+    if (span < 2) return;
+    var sung = (v1 - v0) > 1e-3;
+    for (var p = i0 + 1; p < i1; p++) {
+      var f = (p - i0) / span;
+      slots[p].t = sung ? clock.inv(v0 + (v1 - v0) * f) : t0 + (t1 - t0) * f;
+    }
+  }
+
+  for (var k = 0; k + 1 < known.length; k++) {
+    spread(known[k], slots[known[k]].t, known[k + 1], slots[known[k + 1]].t);
+  }
+  var last = known[known.length - 1];
+  if (last < n - 1) spread(last, slots[last].t, n, end);
+
+  var MIN = 0.04, cap = end - 0.02;
+  for (i = 1; i < n; i++) {
+    if (slots[i].t < slots[i - 1].t + MIN) slots[i].t = slots[i - 1].t + MIN;
+  }
+  for (i = n - 1; i >= 0; i--) {
+    var ceil = cap - (n - 1 - i) * MIN;
+    if (slots[i].t > ceil) slots[i].t = Math.max(start, ceil);
+  }
+}
+
+/* Add word-level timing to lyrics that already have correct line timing.
+ *
+ * This is a far easier problem than aligning a whole song: each line supplies
+ * its own search window, so the model only has to place a handful of words
+ * across a few seconds, and a mistake on one line cannot leak into the next.
+ */
+function refineTimed(asrWords, lyricLines, clock, duration) {
+  if (!lyricLines || !lyricLines.length) return null;
+
+  var PAD = 0.45;          // singers come in early and hold notes late
+  var asr = [], i;
+  for (i = 0; i < asrWords.length; i++) {
+    var n = normWord(asrWords[i].text);
+    if (n) asr.push({ n: n, t: asrWords[i].t, end: asrWords[i].end });
+  }
+
+  var out = [], matched = 0, total = 0, sharpened = 0;
+
+  for (var li = 0; li < lyricLines.length; li++) {
+    var line = lyricLines[li];
+    var start = line.t;
+    var end = (li + 1 < lyricLines.length) ? lyricLines[li + 1].t
+                                           : (duration || start + 4);
+    if (end <= start + 0.2) end = start + 0.6;
+
+    var toks = tokens(line.text);
+    if (!toks.length) { out.push({ t: start, text: line.text, words: null }); continue; }
+    total += toks.length;
+
+    var slots = [];
+    for (i = 0; i < toks.length; i++) slots.push({ n: toks[i].n, raw: toks[i].raw, t: null });
+
+    // Only the transcript inside this line's own window is a candidate.
+    var lo = start - PAD, hi = end + PAD, win = [];
+    for (i = 0; i < asr.length; i++) {
+      if (asr[i].t >= lo && asr[i].t <= hi) win.push(asr[i]);
+      else if (asr[i].t > hi) break;
+    }
+
+    if (win.length) {
+      var pairs = alignTokens(win, slots);
+      if (pairs && pairs.length) {
+        for (var p = 0; p < pairs.length; p++) slots[pairs[p].r].t = win[pairs[p].a].t;
+        matched += pairs.length;
+        sharpened++;
+      }
+    }
+
+    fillWithin(slots, start, end, clock);
+
+    var wordsOut = [];
+    for (i = 0; i < slots.length; i++) wordsOut.push({ t: slots[i].t, text: slots[i].raw });
+    out.push({ t: start, text: line.text, words: wordsOut });
+  }
+
+  return { lines: out, matched: matched, total: total, sharpened: sharpened };
+}
+
 /* No reference text: turn the transcript itself into lyric lines, breaking on
    pauses, sentence punctuation, and length. */
 function linesFromTranscript(words, duration) {
@@ -951,7 +1066,7 @@ function run(opts) {
   if (!file) { R.toast('Load an audio file first.'); return; }
 
   busy = true;
-  setButton(true);
+  setBusy(true);
   lastResult = null;
   $('btnSyncSave').hidden = true;
 
@@ -986,13 +1101,13 @@ function run(opts) {
     })
     .then(function () {
       busy = false;
-      setButton(false);
+      setBusy(false);
     });
 }
 
-function runAi(file, meta) {
-  var existing = R.lyricSource();     // plain text already loaded, if any
-
+/* Decode -> isolate the vocal -> map singing activity -> transcribe.
+   Shared by both AI modes. */
+function analyse(file) {
   var duration = R.duration();
   var clock = null;
 
@@ -1010,7 +1125,59 @@ function runAi(file, meta) {
     .then(function (words) {
       monotonic(words);
       if (!words.length) throw new Error('no speech found in this track');
+      return { words: words, clock: clock, duration: duration };
+    });
+}
 
+/* Keep the line timings that are already loaded and only compute word times
+   inside them. */
+function runRefine() {
+  if (busy) return;
+
+  var file = R.getFile();
+  if (!file) { R.toast('Load an audio file first.'); return; }
+  var lyricLines = R.lyricLines();
+  if (!lyricLines.length) { R.toast('Load timed lyrics first.'); return; }
+
+  busy = true;
+  setBusy(true);
+  lastResult = null;
+  $('btnSyncSave').hidden = true;
+
+  var meta = null;
+
+  metaCandidates(file, R.trackName())
+    .then(function (list) { meta = list[0]; return analyse(file); })
+    .then(function (a) {
+      status('Timing words inside your lines…');
+      var res = refineTimed(a.words, lyricLines, a.clock, a.duration);
+      if (!res || !res.lines.length) throw new Error('nothing to refine');
+
+      var lrc = toLrc(res.lines, meta);
+      var base = meta.title || R.trackName() || 'lyrics';
+      lastResult = { lrc: lrc, name: base + ' word-timed' };
+      R.loadLyrics(lrc, base + ' · word-timed');
+      $('btnSyncSave').hidden = false;
+
+      var pct = Math.round(100 * res.matched / Math.max(1, res.total));
+      statusDone('Word timing added to ' + res.sharpened + ' of ' + res.lines.length +
+                 ' lines — ' + pct + '% of words anchored. Your line timings were kept.');
+    })
+    .catch(function (err) {
+      statusDone('Refine failed: ' + (err && err.message ? err.message : 'unknown error'), true);
+      R.toast('Refine failed — see the panel for details.');
+    })
+    .then(function () {
+      busy = false;
+      setBusy(false);
+    });
+}
+
+function runAi(file, meta) {
+  var existing = R.lyricSource();     // plain text already loaded, if any
+
+  return analyse(file).then(function (a) {
+      var words = a.words, clock = a.clock, duration = a.duration;
       status('Aligning words…');
 
       var lines = null, note = '';
@@ -1050,10 +1217,25 @@ function save() {
   setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
 }
 
-function setButton(on) {
-  var b = $('btnSync');
-  b.disabled = on;
-  b.textContent = on ? 'Syncing…' : 'Auto-sync';
+function setBusy(on) {
+  var sync = $('btnSync');
+  sync.disabled = on;
+  sync.textContent = on ? 'Syncing…' : 'Auto-sync';
+  var ref = $('btnRefine');
+  ref.textContent = on ? 'Working…' : 'Refine words';
+  updateRefine();
+}
+
+/* Refining only means anything when there are line timings to keep and audio
+   to listen to. */
+function updateRefine() {
+  var b = $('btnRefine');
+  if (!b) return;
+  var ok = !busy && !!R.getFile() && R.lyricTimed();
+  b.disabled = !ok;
+  b.title = ok
+    ? 'Keep your line timings and use on-device speech recognition to time each word inside them'
+    : 'Load a track and timed lyrics first — then this times each word inside your existing lines';
 }
 
 /* ------------------------------------------------------------------- boot */
@@ -1066,6 +1248,7 @@ function boot() {
   barEl = $('syncBar');
 
   $('btnSync').addEventListener('click', function (e) { run({ forceAi: e.shiftKey }); });
+  $('btnRefine').addEventListener('click', runRefine);
   $('btnSyncSave').addEventListener('click', save);
 
   // A new track invalidates the last result.
@@ -1073,7 +1256,10 @@ function boot() {
     lastResult = null;
     $('btnSyncSave').hidden = true;
     if (statusEl && !busy) statusEl.hidden = true;
+    updateRefine();
   });
+  R.onLyrics(updateRefine);
+  updateRefine();
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

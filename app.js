@@ -166,6 +166,14 @@ function onTrackChange() {
   }
 }
 
+// Same, for the loaded lyrics.
+var lyricHooks = [];
+function onLyricChange() {
+  for (var i = 0; i < lyricHooks.length; i++) {
+    try { lyricHooks[i](); } catch (e) {}
+  }
+}
+
 function ensureCtx() {
   if (A.ctx) return A.ctx;
   var Ctor = window.AudioContext || window.webkitAudioContext;
@@ -545,6 +553,7 @@ var LY = {
     this.raw = ''; this.timed = false;
     $('lyricName').textContent = 'none';
     document.body.classList.remove('has-lyrics');
+    onLyricChange();
   },
 
   load: function (text, name) {
@@ -562,6 +571,7 @@ var LY = {
     // as "the sync is broken" unless we point at the fix.
     toast(this.lines.length + ' lines loaded' +
       (this.timed ? '.' : ' — untimed and evenly spaced. Hit Auto-sync to time them.'));
+    onLyricChange();
   },
 
   parse: function (text) {
@@ -1816,8 +1826,15 @@ window.Resonant = {
   // Raw text of the lyrics currently loaded, but only when they carry no
   // timing of their own — that is exactly the case alignment can improve.
   lyricSource: function () { return (LY.raw && !LY.timed) ? LY.raw : ''; },
+  lyricTimed: function () { return !!(LY.timed && LY.lines.length); },
+  // Line starts of already-timed lyrics, for refining word timing inside them.
+  lyricLines: function () {
+    if (!LY.timed) return [];
+    return LY.lines.map(function (l) { return { t: l.t, text: l.text }; });
+  },
   loadLyrics: function (text, name) { LY.load(text, name); },
   onTrack: function (fn) { trackHooks.push(fn); },
+  onLyrics: function (fn) { lyricHooks.push(fn); },
   toast: function (msg) { toast(msg); }
 };
 
