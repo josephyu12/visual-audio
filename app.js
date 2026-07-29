@@ -558,8 +558,10 @@ var LY = {
     if (!this.timed) this.retime();
     $('lyricName').textContent = name + (this.timed ? ' (synced)' : ' (auto-timed)');
     document.body.classList.add('has-lyrics');
+    // Untimed lyrics are spread evenly until something times them, which reads
+    // as "the sync is broken" unless we point at the fix.
     toast(this.lines.length + ' lines loaded' +
-      (this.timed ? '.' : ' — untimed, use [ and ] to nudge sync.'));
+      (this.timed ? '.' : ' — untimed and evenly spaced. Hit Auto-sync to time them.'));
   },
 
   parse: function (text) {

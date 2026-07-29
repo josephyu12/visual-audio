@@ -269,42 +269,183 @@ function tryLrclib(candidates, dur) {
 
 /* ------------------------------------------------------------- audio prep */
 
-function downmixTo16k(audioBuffer) {
-  var frames = Math.max(1, Math.round(audioBuffer.duration * 16000));
-  var Ctor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+var SR = 16000;
 
-  function render(ctx, targetRate) {
+/* Small iterative radix-2 FFT. Only needed for the vocal isolation below, so
+   it stays here rather than pulling in a library. */
+function FFT(n) {
+  this.n = n;
+  this.cos = new Float64Array(n / 2);
+  this.sin = new Float64Array(n / 2);
+  for (var i = 0; i < n / 2; i++) {
+    this.cos[i] = Math.cos(-2 * Math.PI * i / n);
+    this.sin[i] = Math.sin(-2 * Math.PI * i / n);
+  }
+  var bits = Math.round(Math.log(n) / Math.LN2);
+  this.rev = new Uint32Array(n);
+  for (var j = 0; j < n; j++) {
+    var r = 0;
+    for (var b = 0; b < bits; b++) if (j & (1 << b)) r |= 1 << (bits - 1 - b);
+    this.rev[j] = r;
+  }
+}
+
+FFT.prototype.transform = function (re, im) {
+  var n = this.n, i, j;
+  for (i = 0; i < n; i++) {
+    j = this.rev[i];
+    if (j > i) {
+      var tr = re[i]; re[i] = re[j]; re[j] = tr;
+      var ti = im[i]; im[i] = im[j]; im[j] = ti;
+    }
+  }
+  for (var size = 2; size <= n; size <<= 1) {
+    var half = size >> 1, step = n / size;
+    for (i = 0; i < n; i += size) {
+      for (j = 0; j < half; j++) {
+        var k = j * step;
+        var c = this.cos[k], s = this.sin[k];
+        var a = i + j, b = a + half;
+        var xr = re[b] * c - im[b] * s;
+        var xi = re[b] * s + im[b] * c;
+        re[b] = re[a] - xr; im[b] = im[a] - xi;
+        re[a] += xr; im[a] += xi;
+      }
+    }
+  }
+};
+
+FFT.prototype.inverse = function (re, im) {
+  var n = this.n, i;
+  for (i = 0; i < n; i++) im[i] = -im[i];
+  this.transform(re, im);
+  for (i = 0; i < n; i++) { re[i] /= n; im[i] = -im[i] / n; }
+};
+
+/* Center-channel extraction.
+ *
+ * Lead vocals are mixed dead centre in virtually every commercial stereo
+ * master, while instruments are spread across the field. Per FFT bin, the mid
+ * signal (L+R)/2 carries the centre and the side signal (L-R)/2 carries
+ * everything panned away from it — so a Wiener-style mask that keeps bins with
+ * little side energy isolates the vocal. It is not Demucs, but it costs one
+ * FFT pass and it is the difference between Whisper hearing a singer and
+ * Whisper hearing a band.
+ *
+ * Mono input has no field to exploit, so it passes through untouched.
+ */
+function centerExtract(left, right) {
+  if (!right) return left;
+
+  var N = 1024, HOP = N / 4, BETA = 1.6, FLOOR = 0.04;
+  var fft = new FFT(N);
+  var win = new Float64Array(N);
+  for (var w = 0; w < N; w++) win[w] = 0.5 - 0.5 * Math.cos(2 * Math.PI * w / N);
+
+  var out = new Float32Array(left.length);
+  var lr = new Float64Array(N), li = new Float64Array(N);
+  var rr = new Float64Array(N), ri = new Float64Array(N);
+
+  for (var pos = 0; pos + N <= left.length; pos += HOP) {
+    var i;
+    for (i = 0; i < N; i++) {
+      lr[i] = left[pos + i] * win[i]; li[i] = 0;
+      rr[i] = right[pos + i] * win[i]; ri[i] = 0;
+    }
+    fft.transform(lr, li);
+    fft.transform(rr, ri);
+
+    for (i = 0; i < N; i++) {
+      var mr = (lr[i] + rr[i]) * 0.5, mi = (li[i] + ri[i]) * 0.5;
+      var sr = (lr[i] - rr[i]) * 0.5, si = (li[i] - ri[i]) * 0.5;
+      var mp = mr * mr + mi * mi;
+      var sp = sr * sr + si * si;
+      // Soft mask, not a hard gate: hard gating leaves musical noise that
+      // costs more recognition accuracy than the bleed it removes.
+      var g = mp / (mp + BETA * sp + 1e-12);
+      if (g < FLOOR) g = FLOOR;
+      lr[i] = mr * g; li[i] = mi * g;
+    }
+
+    fft.inverse(lr, li);
+    // Hann applied on analysis and synthesis sums to 1.5 at 75% overlap.
+    for (i = 0; i < N; i++) out[pos + i] += lr[i] * win[i] / 1.5;
+  }
+  return out;
+}
+
+function offlineCtx(channels, frames, rate) {
+  var Ctor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  return new Ctor(channels, frames, rate);
+}
+
+/* Resample to 16 kHz keeping both channels, so centerExtract still has a
+   stereo field to work with. */
+function toStereo16k(audioBuffer) {
+  var frames = Math.max(1, Math.round(audioBuffer.duration * SR));
+  var channels = Math.min(2, audioBuffer.numberOfChannels);
+
+  function render(ctx) {
     var src = ctx.createBufferSource();
     src.buffer = audioBuffer;
-
-    // Sung content sits in a narrow band. Rolling off the sub-bass and the
-    // cymbal shelf, then lifting presence, measurably steadies Whisper on
-    // dense mixes — it is a poor man's stand-in for vocal separation.
-    var hp = ctx.createBiquadFilter();
-    hp.type = 'highpass'; hp.frequency.value = 130;
-    var lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = Math.min(6000, targetRate / 2 - 200);
-    var pk = ctx.createBiquadFilter();
-    pk.type = 'peaking'; pk.frequency.value = 2200; pk.Q.value = 0.8; pk.gain.value = 4;
-
-    src.connect(hp); hp.connect(lp); lp.connect(pk); pk.connect(ctx.destination);
+    src.connect(ctx.destination);
     src.start();
     return ctx.startRendering();
   }
 
-  var direct;
+  var job;
   try {
-    direct = render(new Ctor(1, frames, 16000), 16000);
+    job = render(offlineCtx(channels, frames, SR));
   } catch (e) {
     // Some Safari builds refuse a 16 kHz OfflineAudioContext — render at the
     // source rate and decimate by hand.
     var rate = audioBuffer.sampleRate;
-    direct = render(new Ctor(1, Math.ceil(audioBuffer.duration * rate), rate), rate)
-      .then(function (rendered) { return resample(rendered.getChannelData(0), rate, 16000); });
+    job = render(offlineCtx(channels, Math.ceil(audioBuffer.duration * rate), rate))
+      .then(function (r) {
+        var out = [resample(r.getChannelData(0), rate, SR)];
+        if (r.numberOfChannels > 1) out.push(resample(r.getChannelData(1), rate, SR));
+        return { chans: out };
+      });
   }
 
-  return Promise.resolve(direct).then(function (out) {
-    var pcm = (out instanceof Float32Array) ? out : out.getChannelData(0);
+  return Promise.resolve(job).then(function (r) {
+    if (r.chans) return r.chans;
+    var chans = [r.getChannelData(0)];
+    if (r.numberOfChannels > 1) chans.push(r.getChannelData(1));
+    return chans;
+  });
+}
+
+/* Vocal band emphasis, applied after isolation. */
+function bandpass(pcm) {
+  var buf, ctx;
+  try {
+    ctx = offlineCtx(1, pcm.length, SR);
+    buf = ctx.createBuffer(1, pcm.length, SR);
+  } catch (e) {
+    return Promise.resolve(pcm);
+  }
+  buf.getChannelData(0).set(pcm);
+
+  var src = ctx.createBufferSource();
+  src.buffer = buf;
+  var hp = ctx.createBiquadFilter();
+  hp.type = 'highpass'; hp.frequency.value = 130;
+  var lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass'; lp.frequency.value = 6000;
+  var pk = ctx.createBiquadFilter();
+  pk.type = 'peaking'; pk.frequency.value = 2200; pk.Q.value = 0.8; pk.gain.value = 4;
+
+  src.connect(hp); hp.connect(lp); lp.connect(pk); pk.connect(ctx.destination);
+  src.start();
+  return ctx.startRendering().then(function (r) { return r.getChannelData(0); });
+}
+
+function prepareAudio(audioBuffer) {
+  return toStereo16k(audioBuffer).then(function (chans) {
+    var vocal = centerExtract(chans[0], chans[1]);
+    return bandpass(vocal);
+  }).then(function (pcm) {
     return normalise(pcm);
   });
 }
@@ -519,34 +660,177 @@ function refLines(text) {
   return lines;
 }
 
-/* Give every reference token a time: matched ones from the transcript,
-   the rest by interpolating between their nearest matched neighbours. */
-function fillTimes(flat) {
-  var known = [];
-  for (var i = 0; i < flat.length; i++) if (flat[i].t != null) known.push(i);
-  if (!known.length) return false;
+/* -------------------------------------------------------- vocal activity */
 
-  // Before the first and after the last anchor, extend at a typical pace.
-  var PACE = 0.32;
-  for (var b = 0; b < known[0]; b++) {
-    flat[b].t = Math.max(0, flat[known[0]].t - (known[0] - b) * PACE);
+/* Where in the track is anybody actually singing? Interpolating word positions
+   through these regions instead of through wall-clock time is what stops
+   unanchored lines from marching evenly across instrumental breaks — the
+   failure that makes weak alignment look identical to no alignment at all. */
+function voicedSegments(pcm) {
+  var FR = 0.02, frame = Math.floor(FR * SR);
+  var n = Math.floor(pcm.length / frame);
+  if (n < 5) return [];
+
+  var rms = new Float32Array(n), i, j;
+  for (i = 0; i < n; i++) {
+    var sum = 0, base = i * frame;
+    for (j = 0; j < frame; j++) { var v = pcm[base + j]; sum += v * v; }
+    rms[i] = Math.sqrt(sum / frame);
   }
-  var lastK = known[known.length - 1];
-  for (var a = lastK + 1; a < flat.length; a++) {
-    flat[a].t = flat[lastK].t + (a - lastK) * PACE;
+
+  // Smooth over ~100 ms so one quiet frame mid-word cannot split a phrase.
+  var sm = new Float32Array(n), R = 2;
+  for (i = 0; i < n; i++) {
+    var a = i > R ? i - R : 0, b = i + R < n ? i + R : n - 1, t = 0;
+    for (var k = a; k <= b; k++) t += rms[k];
+    sm[i] = t / (b - a + 1);
+  }
+
+  var sorted = Array.prototype.slice.call(sm).sort(function (x, y) { return x - y; });
+  var lo = sorted[Math.floor(n * 0.15)];
+  var hi = sorted[Math.floor(n * 0.92)];
+  var thresh = lo + 0.16 * (hi - lo);
+  if (!(thresh > 0)) return [];
+
+  var segs = [], start = -1;
+  for (i = 0; i < n; i++) {
+    if (sm[i] > thresh) { if (start < 0) start = i; }
+    else if (start >= 0) { segs.push({ a: start * FR, b: i * FR }); start = -1; }
+  }
+  if (start >= 0) segs.push({ a: start * FR, b: n * FR });
+
+  // Merge phrases split by a breath, then drop blips.
+  var merged = [];
+  for (i = 0; i < segs.length; i++) {
+    var last = merged[merged.length - 1];
+    if (last && segs[i].a - last.b < 0.35) last.b = segs[i].b;
+    else merged.push({ a: segs[i].a, b: segs[i].b });
+  }
+  return merged.filter(function (s) { return s.b - s.a >= 0.25; });
+}
+
+/* Converts between wall-clock time and "singing time" — seconds of detected
+   vocal activity elapsed. */
+function VoiceClock(segs, duration) {
+  this.segs = (segs && segs.length) ? segs : [{ a: 0, b: duration || 1 }];
+  this.cum = new Float64Array(this.segs.length + 1);
+  for (var i = 0; i < this.segs.length; i++) {
+    this.cum[i + 1] = this.cum[i] + (this.segs[i].b - this.segs[i].a);
+  }
+  this.total = this.cum[this.segs.length];
+}
+
+VoiceClock.prototype.at = function (t) {
+  var s = this.segs;
+  for (var i = 0; i < s.length; i++) {
+    if (t < s[i].a) return this.cum[i];
+    if (t <= s[i].b) return this.cum[i] + (t - s[i].a);
+  }
+  return this.total;
+};
+
+VoiceClock.prototype.inv = function (v) {
+  var s = this.segs;
+  if (v <= 0) return s[0].a;
+  for (var i = 0; i < s.length; i++) {
+    if (v <= this.cum[i + 1]) return s[i].a + (v - this.cum[i]);
+  }
+  return s[s.length - 1].b;
+};
+
+/* Give every reference token a time: matched ones from the transcript, the
+   rest distributed across the singing between their nearest anchors. */
+function fillTimes(flat, clock) {
+  var n = flat.length, known = [], i;
+  for (i = 0; i < n; i++) if (flat[i].t != null) known.push(i);
+
+  function spread(i0, t0, i1, t1) {
+    var v0 = clock.at(t0), v1 = clock.at(t1), span = i1 - i0;
+    if (span < 2) return;
+    var sung = (v1 - v0) > 1e-3;
+    for (var p = i0 + 1; p < i1; p++) {
+      var f = (p - i0) / span;
+      flat[p].t = sung ? clock.inv(v0 + (v1 - v0) * f) : t0 + (t1 - t0) * f;
+    }
+  }
+
+  if (!known.length) {
+    // Nothing anchored: spread across detected singing rather than the track.
+    spread(-1, clock.inv(0), n, clock.inv(clock.total));
+    return true;
+  }
+
+  var first = known[0], last = known[known.length - 1];
+
+  /* Singing-seconds per word, measured from the anchored stretch rather than
+     assumed. A fixed rate was the original sin here: it pinned every trailing
+     word just past the last anchor at an identical spacing, which is precisely
+     what "everything is evenly spaced" looks like. */
+  var PACE = 0.30;
+  if (known.length >= 2) {
+    var vSpan = clock.at(flat[last].t) - clock.at(flat[first].t);
+    var wSpan = last - first;
+    if (wSpan > 0 && vSpan > 0) PACE = Math.min(1.6, Math.max(0.12, vSpan / wSpan));
+  }
+
+  if (first > 0) {
+    var vs = Math.max(0, clock.at(flat[first].t) - (first + 1) * PACE);
+    spread(-1, clock.inv(vs), first, flat[first].t);
   }
   for (var k = 0; k + 1 < known.length; k++) {
-    var i0 = known[k], i1 = known[k + 1];
-    if (i1 - i0 < 2) continue;
-    var t0 = flat[i0].t, t1 = flat[i1].t, span = (t1 - t0) / (i1 - i0);
-    for (var q = i0 + 1; q < i1; q++) flat[q].t = t0 + (q - i0) * span;
+    spread(known[k], flat[known[k]].t, known[k + 1], flat[known[k + 1]].t);
+  }
+  if (last < n - 1) {
+    var ve = Math.min(clock.total, clock.at(flat[last].t) + (n - last) * PACE);
+    spread(last, flat[last].t, n, clock.inv(ve));
   }
   return true;
 }
 
-function alignToLyrics(words, lyricText) {
+function shiftLine(line, d) {
+  line.t += d;
+  for (var i = 0; i < line.words.length; i++) line.words[i].t += d;
+}
+
+/* Sparse anchors can land several lines on the same instant, which reads as a
+   flicker. Force a minimum gap forward, then compress backward if that pushed
+   the tail past the end of the track. */
+function spaceOut(lines, duration) {
+  var MINGAP = 0.35, i;
+  if (!lines.length) return lines;
+
+  if (lines[0].t < 0) shiftLine(lines[0], -lines[0].t);
+  for (i = 1; i < lines.length; i++) {
+    var floor = lines[i - 1].t + MINGAP;
+    if (lines[i].t < floor) shiftLine(lines[i], floor - lines[i].t);
+  }
+
+  var limit = (duration && duration > 1) ? duration - 0.4 : Infinity;
+  for (i = lines.length - 1; i >= 0; i--) {
+    var cap = limit - (lines.length - 1 - i) * MINGAP;
+    if (lines[i].t > cap) shiftLine(lines[i], cap - lines[i].t);
+  }
+
+  for (i = 0; i < lines.length; i++) {
+    var ws = lines[i].words || [];
+    for (var j = 0; j < ws.length; j++) {
+      if (j === 0) ws[j].t = lines[i].t;
+      else if (ws[j].t < ws[j - 1].t + 0.04) ws[j].t = ws[j - 1].t + 0.04;
+    }
+  }
+  return lines;
+}
+
+function alignToLyrics(words, lyricText, clock, duration) {
   var lines = refLines(lyricText);
   if (!lines.length) return null;
+
+  // Without vocal-activity data, treat the whole track as continuously sung —
+  // interpolation then degrades to plain linear, which is the old behaviour.
+  if (!clock) {
+    var end = duration || (words.length ? words[words.length - 1].end + 5 : 1);
+    clock = new VoiceClock([{ a: 0, b: end }], end);
+  }
 
   var flat = [], li;
   for (li = 0; li < lines.length; li++) {
@@ -566,7 +850,7 @@ function alignToLyrics(words, lyricText) {
   if (!pairs || !pairs.length) return null;
 
   for (var p = 0; p < pairs.length; p++) flat[pairs[p].r].t = asr[pairs[p].a].t;
-  if (!fillTimes(flat)) return null;
+  if (!fillTimes(flat, clock)) return null;
 
   // Rebuild lines, keeping each line's own words for per-word highlighting.
   var out = [], cursor = 0;
@@ -581,13 +865,14 @@ function alignToLyrics(words, lyricText) {
     });
   }
   out.sort(function (x, y) { return x.t - y.t; });
+  spaceOut(out, duration);
 
   return { lines: out, matched: pairs.length, total: flat.length };
 }
 
 /* No reference text: turn the transcript itself into lyric lines, breaking on
    pauses, sentence punctuation, and length. */
-function linesFromTranscript(words) {
+function linesFromTranscript(words, duration) {
   var lines = [], cur = [];
 
   function flush() {
@@ -620,7 +905,7 @@ function linesFromTranscript(words) {
     run = same ? run + 1 : 0;
     if (run < 2) out.push(lines[j]);
   }
-  return out;
+  return spaceOut(out, duration);
 }
 
 /* ------------------------------------------------------------ LRC writing */
@@ -708,13 +993,18 @@ function run(opts) {
 function runAi(file, meta) {
   var existing = R.lyricSource();     // plain text already loaded, if any
 
+  var duration = R.duration();
+  var clock = null;
+
   status('Decoding audio…');
   return decodeFile(file)
     .then(function (ab) {
-      status('Preparing audio for the model…');
-      return downmixTo16k(ab);
+      status('Isolating the vocal…');
+      if (!duration) duration = ab.duration;
+      return prepareAudio(ab);
     })
     .then(function (pcm) {
+      clock = new VoiceClock(voicedSegments(pcm), duration);
       return transcribe(pcm);
     })
     .then(function (words) {
@@ -725,7 +1015,7 @@ function runAi(file, meta) {
 
       var lines = null, note = '';
       if (existing) {
-        var aligned = alignToLyrics(words, existing);
+        var aligned = alignToLyrics(words, existing, clock, duration);
         if (aligned) {
           lines = aligned.lines;
           var pct = Math.round(100 * aligned.matched / Math.max(1, aligned.total));
@@ -734,7 +1024,7 @@ function runAi(file, meta) {
         }
       }
       if (!lines) {
-        lines = linesFromTranscript(words);
+        lines = linesFromTranscript(words, duration);
         note = 'Transcribed ' + lines.length + ' lines from the vocal.';
       }
       if (!lines.length) throw new Error('nothing usable came back');

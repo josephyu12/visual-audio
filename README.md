@@ -81,12 +81,26 @@ via [transformers.js](https://github.com/huggingface/transformers.js) — WebGPU
 real adapter is available, WASM otherwise. The audio never leaves your machine. First
 run pulls ~50 MB of weights from the Hugging Face CDN; after that it's cached.
 
+Before the model hears anything, two things happen to the audio.
+
+**Vocal isolation.** Lead vocals sit dead centre in virtually every commercial stereo
+master while instruments are spread across the field. An FFT pass keeps the bins where
+the mid signal `(L+R)/2` dominates the side signal `(L-R)/2`, using a soft Wiener-style
+mask — hard gating leaves musical noise that costs more accuracy than the bleed it
+removes. It isn't Demucs, but it costs one pass and it's the difference between Whisper
+hearing a singer and Whisper hearing a band. Mono files skip it, having no field to
+exploit.
+
+**Vocal activity detection.** An RMS envelope over the isolated vocal marks where
+anybody is actually singing, merging phrases split by a breath and dropping blips.
+That map is what the timing model interpolates through — see below.
+
 Two modes, depending on what's loaded:
 
 - **Lyrics already loaded (untimed `.txt`)** — the transcript is aligned to your text
   with Needleman-Wunsch over word tokens. Words the model mishears still *display*
   correctly, because only the timing comes from the transcript. Unmatched words are
-  interpolated between their nearest anchors. The panel reports what percentage of
+  distributed between their nearest anchors. The panel reports what percentage of
   words actually anchored.
 - **No lyrics loaded** — the transcript itself becomes the lyric track, split into
   lines on pauses, sentence punctuation, and length.
@@ -94,18 +108,43 @@ Two modes, depending on what's loaded:
 Either way the output is enhanced LRC, so you get per-word highlighting, and
 **Save .lrc** writes it out so you never have to run it twice.
 
+### Interpolating in singing time, not wall-clock time
+
+Whisper anchors maybe a third of the words on a dense mix. The other two thirds have
+to be placed, and *how* you place them is the whole ballgame.
+
+Spreading them evenly between anchors is the obvious approach and it is wrong, because
+songs are not evenly sung — they have intros, breaks, and outros where nothing is sung
+at all. Evenly-spaced words march straight through an instrumental break and arrive
+late for the rest of the song. Worse, extrapolating past the *last* anchor at a fixed
+rate pins every remaining line just after it, at identical spacing. On a track with a
+long repeated outro that dumps a dozen lines into a few seconds and the result is
+indistinguishable from no alignment at all.
+
+So the timing model works in **singing time**: seconds of detected vocal activity
+elapsed, rather than seconds of tape. Unanchored words are distributed across the
+singing between their anchors, so nothing advances during a break. The extrapolation
+rate is *measured* from the anchored stretch instead of assumed. Finally a spacing
+pass enforces a minimum gap between lines and compresses backward if that pushed the
+tail past the end of the track — sparse anchors otherwise stack several lines on the
+same instant, which reads as a flicker.
+
+Measured on a full track against a plain-text lyric file, this took anchoring from 21%
+to 30%, eliminated line pile-ups (minimum gap 0.00s → 0.40s), and replaced a constant
+1.9s tail march with real spacing that reaches the end of the song.
+
 ### How well it actually works
 
 Tier 1 is excellent when it hits. Tier 2 is honest but limited: `whisper-base` was
-trained on speech, and dense polyphonic music hides the vocal from it. On a
-commercial mix it may recover only a fraction of the words — the published research
-on lyrics-to-audio alignment gets its accuracy by running vocal separation (Demucs,
-Spleeter) first, which isn't practical client-side. Expect good results on sparse or
-vocal-forward material and spoken word, thin results on a loud full-band chorus.
+trained on speech, and dense polyphonic music hides the vocal from it even after
+centre extraction. The published research on lyrics-to-audio alignment gets its
+accuracy by running full source separation (Demucs, Spleeter) first, which isn't
+practical client-side. Expect good results on sparse or vocal-forward material and
+spoken word, thinner results on a loud full-band chorus.
 
 That's why alignment mode matters: even sparse anchors pin your real lyrics to the
-right places, and interpolation covers the rest. When confidence is low the panel says
-so, and `[` / `]` still nudge.
+right places, and singing-time interpolation covers the rest. When confidence is low
+the panel says so, and `[` / `]` still nudge.
 
 Implementation notes, both of which were found the hard way and are commented in the
 source:
