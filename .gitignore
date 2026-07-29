@@ -1,0 +1,15 @@
+# Audio and lyrics are copyrighted — supply your own copy (see README)
+*.mp3
+*.m4a
+*.wav
+*.ogg
+*.flac
+*.opus
+*.lrc
+!assets/sample.lrc
+
+# Tooling artifacts
+.gstack/
+
+# macOS
+.DS_Store

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RESONANT — music visualizer</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<!-- top HUD ------------------------------------------------------------- -->
+<div class="hud">
+  <span class="brand">Resonant</span>
+  <span class="track" id="trackName">no track</span>
+  <span class="spacer"></span>
+  <span class="stat"><b id="bpm">--</b>BPM</span>
+  <span class="stat"><div class="meter"><i id="levelBar"></i></div></span>
+  <span class="stat wide">lyrics <b id="lyricName" style="font-weight:600">none</b></span>
+  <span class="stat wide"><b id="fps">60</b>fps</span>
+  <span class="stat wide" id="tierWrap">q:<b id="tierName" style="font-weight:600">high</b></span>
+</div>
+
+<!-- idle splash --------------------------------------------------------- -->
+<div class="intro">
+  <h1>Drop a track. Watch it move.</h1>
+  <p>Drag in an audio file — add a <b>.lrc</b> or <b>.txt</b> for karaoke lyrics</p>
+</div>
+
+<!-- control panel ------------------------------------------------------- -->
+<div class="panel">
+
+  <div class="row transport">
+    <button class="round primary" id="btnPlay" title="Play / pause (Space)"><span id="playIcon">▶</span></button>
+    <span class="time" id="tCur">0:00</span>
+    <input type="range" id="seek" min="0" max="1000" value="0" step="1" title="Seek">
+    <span class="time" id="tTot">0:00</span>
+    <div class="slider">
+      <label for="vol">Vol</label>
+      <input type="range" id="vol" min="0" max="1" step="0.01" value="0.85">
+    </div>
+    <button class="round" id="btnFull" title="Fullscreen (F)">⛶</button>
+  </div>
+
+  <div class="row">
+    <button class="primary" id="btnFile">Load audio</button>
+    <button id="btnLyric">Load lyrics (.lrc)</button>
+    <button id="btnDemo">Demo beat</button>
+    <button id="btnMic">Mic</button>
+
+    <div class="divider"></div>
+
+    <select id="palette" title="Colour palette">
+      <option value="0">Billie Neon</option>
+      <option value="1">Moonwalk</option>
+      <option value="2">Thriller</option>
+      <option value="3">Origami</option>
+      <option value="4">Jade Diablo</option>
+    </select>
+
+    <div class="slider">
+      <label for="intensity">Intensity</label>
+      <input type="range" id="intensity" min="0.2" max="2" step="0.05" value="1">
+    </div>
+
+    <div class="slider">
+      <label for="offset">Lyric sync</label>
+      <input type="range" id="offset" min="-5" max="5" step="0.1" value="0">
+      <label id="offsetVal" style="min-width:38px">0.0s</label>
+    </div>
+  </div>
+
+  <div class="row">
+    <label class="tog"><input type="checkbox" id="grpChess" checked><span class="dot"></span>Chess</label>
+    <label class="tog"><input type="checkbox" id="grpOrigami" checked><span class="dot"></span>Origami</label>
+    <label class="tog"><input type="checkbox" id="grpDiablo" checked><span class="dot"></span>Diablo</label>
+
+    <div class="divider"></div>
+
+    <label class="tog"><input type="checkbox" id="optBloom" checked><span class="dot"></span>Bloom</label>
+    <label class="tog"><input type="checkbox" id="optFloor" checked><span class="dot"></span>Light floor</label>
+    <label class="tog"><input type="checkbox" id="optLyrics" checked><span class="dot"></span>Karaoke</label>
+
+    <span class="spacer"></span>
+    <span class="hint">
+      <kbd>Space</kbd> play <kbd>←</kbd><kbd>→</kbd> seek <kbd>F</kbd> full
+      <kbd>H</kbd> hide UI <kbd>P</kbd> palette <kbd>[</kbd><kbd>]</kbd> lyric sync
+    </span>
+  </div>
+
+</div>
+
+<!-- drag overlay -------------------------------------------------------- -->
+<div class="dropzone">
+  <div class="box">
+    <h2>Drop it</h2>
+    <p>audio (mp3, m4a, wav, ogg) &nbsp;·&nbsp; lyrics (.lrc, .txt)</p>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<audio id="audio" preload="auto" crossorigin="anonymous"></audio>
+<input type="file" id="fileInput" accept="audio/*,.mp3,.m4a,.wav,.ogg,.flac,.opus" hidden>
+<input type="file" id="lyricInput" accept=".lrc,.txt,text/plain" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>

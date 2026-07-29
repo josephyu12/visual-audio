@@ -1,0 +1,262 @@
+/* RESONANT — UI chrome. The visuals live on the canvas; this is glass on top. */
+
+:root {
+  --ui-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Inter, system-ui, sans-serif;
+  --glass: rgba(16, 18, 30, 0.55);
+  --glass-line: rgba(255, 255, 255, 0.10);
+  --txt: rgba(255, 255, 255, 0.92);
+  --txt-dim: rgba(255, 255, 255, 0.52);
+  --accent: #7ad7ff;
+  --accent-2: #d47bff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: #05060c;
+  color: var(--txt);
+  font-family: var(--ui-font);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#stage {
+  position: fixed; inset: 0;
+  width: 100vw; height: 100vh;
+  display: block;
+}
+
+/* ------------------------------------------------------------- top HUD -- */
+
+.hud {
+  position: fixed; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; gap: 18px;
+  padding: 16px 22px;
+  pointer-events: none;
+  z-index: 10;
+  transition: opacity .45s ease, transform .45s ease;
+}
+
+.brand {
+  font-size: 15px; font-weight: 700; letter-spacing: .22em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.track {
+  font-size: 13px; font-weight: 600; color: var(--txt);
+  max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  opacity: 0; transition: opacity .3s;
+}
+body.has-track .track { opacity: 1; }
+
+.hud .spacer { flex: 1; }
+
+.stat {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 11px; color: var(--txt-dim);
+  font-variant-numeric: tabular-nums;
+}
+.stat b { font-size: 13px; color: var(--txt); font-weight: 700; }
+
+.meter {
+  width: 74px; height: 3px; border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12); overflow: hidden;
+}
+.meter i {
+  display: block; height: 100%; width: 100%;
+  transform-origin: left center; transform: scaleX(0);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 2px;
+}
+
+/* ------------------------------------------------------- control panel -- */
+
+.panel {
+  position: fixed; left: 50%; bottom: 22px;
+  transform: translateX(-50%);
+  width: min(1080px, calc(100vw - 36px));
+  padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  border-radius: 18px;
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  z-index: 10;
+  transition: opacity .45s ease, transform .45s ease;
+}
+
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.row.transport { gap: 14px; }
+
+button {
+  font-family: var(--ui-font);
+  font-size: 12px; font-weight: 600;
+  color: var(--txt);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--glass-line);
+  border-radius: 11px;
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: background .18s, border-color .18s, transform .1s;
+  white-space: nowrap;
+}
+button:hover { background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.24); }
+button:active { transform: translateY(1px); }
+
+button.primary {
+  background: linear-gradient(135deg, rgba(122, 215, 255, 0.22), rgba(212, 123, 255, 0.22));
+  border-color: rgba(160, 190, 255, 0.35);
+}
+
+button.round {
+  width: 42px; height: 42px; padding: 0;
+  border-radius: 50%;
+  font-size: 15px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.time {
+  font-size: 11px; color: var(--txt-dim);
+  font-variant-numeric: tabular-nums; min-width: 38px; text-align: center;
+}
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 3px;
+  background: rgba(255, 255, 255, 0.16);
+  outline: none; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 10px rgba(122, 215, 255, 0.9);
+  cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 13px; height: 13px; border: none; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 10px rgba(122, 215, 255, 0.9); cursor: pointer;
+}
+#seek { flex: 1; min-width: 120px; }
+.slider { display: flex; align-items: center; gap: 8px; }
+.slider label { font-size: 11px; color: var(--txt-dim); white-space: nowrap; }
+.slider input[type="range"] { width: 88px; }
+
+select {
+  font-family: var(--ui-font); font-size: 12px; font-weight: 600;
+  color: var(--txt);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--glass-line);
+  border-radius: 11px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+select option { background: #12141f; color: #fff; }
+
+/* pill toggles */
+.tog {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11px; font-weight: 600; color: var(--txt-dim);
+  padding: 7px 12px;
+  border: 1px solid var(--glass-line);
+  border-radius: 999px;
+  cursor: pointer; user-select: none;
+  transition: color .18s, background .18s, border-color .18s;
+}
+.tog input { display: none; }
+.tog .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  transition: background .18s, box-shadow .18s;
+}
+.tog.on { color: var(--txt); background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.22); }
+.tog.on .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.divider { width: 1px; height: 22px; background: var(--glass-line); }
+
+.hint {
+  font-size: 10.5px; color: rgba(255, 255, 255, 0.34);
+  letter-spacing: .02em;
+}
+.hint kbd {
+  font-family: var(--ui-font); font-size: 10px;
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--glass-line);
+  border-radius: 4px; padding: 1px 5px; margin: 0 1px;
+}
+
+/* ------------------------------------------------------------ dropzone -- */
+
+.dropzone {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 10px;
+  pointer-events: none; opacity: 0;
+  background: rgba(6, 8, 18, 0.72);
+  backdrop-filter: blur(6px);
+  z-index: 20;
+  transition: opacity .2s;
+}
+body.dragging .dropzone { opacity: 1; }
+.dropzone .box {
+  border: 2px dashed rgba(255, 255, 255, 0.35);
+  border-radius: 22px; padding: 54px 76px;
+  text-align: center;
+}
+.dropzone h2 { margin: 0 0 6px; font-size: 20px; font-weight: 700; }
+.dropzone p { margin: 0; font-size: 12.5px; color: var(--txt-dim); }
+
+/* --------------------------------------------------------------- intro -- */
+
+.intro {
+  position: fixed; left: 50%; top: 38%;
+  transform: translate(-50%, -50%);
+  text-align: center; z-index: 9;
+  pointer-events: none;
+  transition: opacity .5s;
+}
+body.has-track .intro { opacity: 0; }
+.intro h1 {
+  margin: 0 0 10px;
+  font-size: clamp(30px, 6vw, 62px); font-weight: 800; letter-spacing: -.02em;
+  background: linear-gradient(100deg, #fff, var(--accent) 45%, var(--accent-2));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.intro p { margin: 0; font-size: 13px; color: var(--txt-dim); }
+
+/* --------------------------------------------------------------- toast -- */
+
+.toast {
+  position: fixed; left: 50%; top: 74px;
+  transform: translate(-50%, -8px);
+  padding: 9px 16px;
+  font-size: 12px; font-weight: 600;
+  background: rgba(18, 20, 34, 0.86);
+  border: 1px solid var(--glass-line);
+  border-radius: 11px;
+  backdrop-filter: blur(14px);
+  opacity: 0; pointer-events: none;
+  z-index: 30;
+  transition: opacity .25s, transform .25s;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ------------------------------------------------------- idle / hidden -- */
+
+body.idle .panel { opacity: 0; transform: translateX(-50%) translateY(14px); pointer-events: none; }
+body.idle .hud { opacity: 0; transform: translateY(-10px); }
+body.idle { cursor: none; }
+
+body.hideui .panel, body.hideui .hud, body.hideui .intro { opacity: 0 !important; pointer-events: none; }
+
+@media (max-width: 720px) {
+  .hint, .stat.wide { display: none; }
+  .panel { padding: 12px; gap: 10px; }
+}
