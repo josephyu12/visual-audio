@@ -153,8 +153,18 @@ function resize() {
 
 var A = {
   ctx: null, el: null, srcEl: null, gain: null, analyser: null, micSrc: null,
-  freq: null, time: null, objUrl: null, mode: 'none', trackName: ''
+  freq: null, time: null, objUrl: null, mode: 'none', trackName: '',
+  // The original File, kept so lyricsync.js can re-decode it for the model.
+  file: null
 };
+
+// Fired whenever the loaded track changes — lyricsync.js listens.
+var trackHooks = [];
+function onTrackChange() {
+  for (var i = 0; i < trackHooks.length; i++) {
+    try { trackHooks[i](); } catch (e) {}
+  }
+}
 
 function ensureCtx() {
   if (A.ctx) return A.ctx;
@@ -188,10 +198,11 @@ function resumeCtx() {
   if (A.ctx && A.ctx.state === 'suspended') A.ctx.resume().catch(function () {});
 }
 
-function loadUrl(url, name, isObjectUrl) {
+function loadUrl(url, name, isObjectUrl, file) {
   ensureCtx();
   if (!A.ctx) return;
   stopMic();
+  A.file = file || null;
   if (A.objUrl) { URL.revokeObjectURL(A.objUrl); A.objUrl = null; }
   if (isObjectUrl) A.objUrl = url;
   A.mode = 'file';
@@ -202,6 +213,7 @@ function loadUrl(url, name, isObjectUrl) {
   LY.retime();
   $('trackName').textContent = name;
   document.body.classList.add('has-track');
+  onTrackChange();
   A.el.play().then(function () { resumeCtx(); }).catch(function () {
     toast('Press play to start.');
   });
@@ -211,7 +223,7 @@ function loadFile(file) {
   if (!file) return;
   var ok = /^audio\//.test(file.type) || /\.(mp3|m4a|aac|wav|ogg|oga|flac|opus|webm)$/i.test(file.name);
   if (!ok) { toast('That does not look like an audio file.'); return; }
-  loadUrl(URL.createObjectURL(file), file.name.replace(/\.[^.]+$/, ''), true);
+  loadUrl(URL.createObjectURL(file), file.name.replace(/\.[^.]+$/, ''), true, file);
 }
 
 function startMic() {
@@ -229,8 +241,10 @@ function startMic() {
       A.micSrc.connect(A.analyser);   // terminal — never routed to speakers
       A.mode = 'mic';
       A.trackName = 'Live input';
+      A.file = null;
       $('trackName').textContent = 'Live input';
       document.body.classList.add('has-track');
+      onTrackChange();
       resumeCtx();
       toast('Listening to microphone.');
     })
@@ -1786,6 +1800,24 @@ function toggleFullscreen() {
 }
 
 /* ------------------------------------------------------------------ boot -- */
+
+/* ---------------------------------------------------------------- bridge -- */
+
+/* Narrow surface for lyricsync.js — everything above lives inside this IIFE,
+   and this is the only way out of it. */
+window.Resonant = {
+  getFile: function () { return A.mode === 'file' ? A.file : null; },
+  trackName: function () { return A.trackName || ''; },
+  duration: function () {
+    return (A.el && isFinite(A.el.duration) && A.el.duration > 0) ? A.el.duration : 0;
+  },
+  // Raw text of the lyrics currently loaded, but only when they carry no
+  // timing of their own — that is exactly the case alignment can improve.
+  lyricSource: function () { return (LY.raw && !LY.timed) ? LY.raw : ''; },
+  loadLyrics: function (text, name) { LY.load(text, name); },
+  onTrack: function (fn) { trackHooks.push(fn); },
+  toast: function (msg) { toast(msg); }
+};
 
 function boot() {
   bindUI();

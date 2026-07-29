@@ -108,6 +108,8 @@ button {
 }
 button:hover { background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.24); }
 button:active { transform: translateY(1px); }
+button:disabled { opacity: .5; cursor: default; transform: none; }
+button:disabled:hover { background: rgba(255, 255, 255, 0.07); border-color: var(--glass-line); }
 
 button.primary {
   background: linear-gradient(135deg, rgba(122, 215, 255, 0.22), rgba(212, 123, 255, 0.22));
@@ -179,6 +181,43 @@ select option { background: #12141f; color: #fff; }
 .tog.on .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
 .divider { width: 1px; height: 22px; background: var(--glass-line); }
+
+/* auto-sync progress ------------------------------------------------------ */
+
+.row.sync {
+  font-size: 11px; color: var(--txt-dim);
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.row.sync #syncMsg { flex: 0 1 auto; min-width: 0; }
+.row.sync.bad { border-color: rgba(255, 130, 130, 0.42); background: rgba(255, 90, 90, 0.09); }
+.row.sync.bad #syncMsg { color: rgba(255, 190, 190, 0.95); }
+.row.sync.bad .spinner { display: none; }
+.row.sync .bar {
+  flex: 1 1 120px; max-width: 220px; height: 4px;
+  border-radius: 3px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.14);
+}
+.row.sync .bar i {
+  display: block; height: 100%; width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(122, 215, 255, 0.9), rgba(212, 123, 255, 0.9));
+  transition: width .25s ease-out;
+}
+.row.sync button { padding: 5px 10px; font-size: 11px; border-radius: 8px; }
+
+.spinner {
+  width: 11px; height: 11px; flex: none;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: rgba(160, 200, 255, 0.95);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 
 .hint {
   font-size: 10.5px; color: rgba(255, 255, 255, 0.34);

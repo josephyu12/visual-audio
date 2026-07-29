@@ -25,7 +25,7 @@
 <!-- idle splash --------------------------------------------------------- -->
 <div class="intro">
   <h1>Drop a track. Watch it move.</h1>
-  <p>Drag in an audio file — add a <b>.lrc</b> or <b>.txt</b> for karaoke lyrics</p>
+  <p>Drag in an audio file — add a <b>.lrc</b> or <b>.txt</b>, or hit <b>Auto-sync</b></p>
 </div>
 
 <!-- control panel ------------------------------------------------------- -->
@@ -46,6 +46,7 @@
   <div class="row">
     <button class="primary" id="btnFile">Load audio</button>
     <button id="btnLyric">Load lyrics (.lrc)</button>
+    <button id="btnSync" title="Find synced lyrics online, or time them with on-device speech recognition (Shift-click to skip the online lookup)">Auto-sync</button>
     <button id="btnDemo">Demo beat</button>
     <button id="btnMic">Mic</button>
 
@@ -69,6 +70,13 @@
       <input type="range" id="offset" min="-5" max="5" step="0.1" value="0">
       <label id="offsetVal" style="min-width:38px">0.0s</label>
     </div>
+  </div>
+
+  <div class="row sync" id="syncStatus" hidden>
+    <span class="spinner"></span>
+    <span id="syncMsg">Working…</span>
+    <span class="bar" hidden><i id="syncBar"></i></span>
+    <button id="btnSyncSave" hidden>Save .lrc</button>
   </div>
 
   <div class="row">
@@ -106,5 +114,6 @@
 <input type="file" id="lyricInput" accept=".lrc,.txt,text/plain" hidden>
 
 <script src="app.js"></script>
+<script src="lyricsync.js"></script>
 </body>
 </html>

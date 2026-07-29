@@ -20,7 +20,8 @@ python3 -m http.server 8777
 
 1. Open the page.
 2. **Load audio** (or drag the file anywhere on the window) → pick your `Billie Jean` file.
-3. **Load lyrics (.lrc)** → pick a synced lyric file.
+3. **Auto-sync** → finds and loads the synced lyrics for you. Or **Load lyrics (.lrc)**
+   if you already have a file.
 4. Hit **Fullscreen**. The UI fades out on its own while the track plays.
 
 The `NCS Blue` palette and the light-up perspective floor are the defaults.
@@ -53,6 +54,73 @@ keys while it plays.
 Timing drift is normal on the first pass. Adjust with `[` and `]`; the offset applies
 instantly and survives seeking.
 
+## Auto-sync
+
+**Auto-sync** times the lyrics for whatever track is loaded, without you hunting down
+an `.lrc`. It tries two tiers in order.
+
+### Tier 1 — LRCLIB lookup
+
+Reads the file's ID3 tags and filename, then queries
+[LRCLIB](https://lrclib.net), a free crowd-sourced database of synced lyrics.
+CORS-open, no key, no account, and the timings are human-checked — so for a song
+anyone has heard of, this beats any model. It usually lands in well under a second.
+
+Tags on downloaded files are often junk (`michaeljacksonVEVO`, with the artist packed
+into the title), so several readings of the metadata are tried in order: artist split
+out of the title field, the tag pair as-is, the filename, then title-only. Exact
+lookups are attempted across every reading before falling back to fuzzy search, and a
+candidate whose duration is more than 12s off the loaded file is rejected — that
+means a different cut of the song, whose timings would be worse than useless.
+
+### Tier 2 — on-device speech recognition
+
+No match online, or you shift-clicked to skip the lookup? The track is transcribed in
+your browser with [Whisper](https://huggingface.co/onnx-community/whisper-base_timestamped)
+via [transformers.js](https://github.com/huggingface/transformers.js) — WebGPU when a
+real adapter is available, WASM otherwise. The audio never leaves your machine. First
+run pulls ~50 MB of weights from the Hugging Face CDN; after that it's cached.
+
+Two modes, depending on what's loaded:
+
+- **Lyrics already loaded (untimed `.txt`)** — the transcript is aligned to your text
+  with Needleman-Wunsch over word tokens. Words the model mishears still *display*
+  correctly, because only the timing comes from the transcript. Unmatched words are
+  interpolated between their nearest anchors. The panel reports what percentage of
+  words actually anchored.
+- **No lyrics loaded** — the transcript itself becomes the lyric track, split into
+  lines on pauses, sentence punctuation, and length.
+
+Either way the output is enhanced LRC, so you get per-word highlighting, and
+**Save .lrc** writes it out so you never have to run it twice.
+
+### How well it actually works
+
+Tier 1 is excellent when it hits. Tier 2 is honest but limited: `whisper-base` was
+trained on speech, and dense polyphonic music hides the vocal from it. On a
+commercial mix it may recover only a fraction of the words — the published research
+on lyrics-to-audio alignment gets its accuracy by running vocal separation (Demucs,
+Spleeter) first, which isn't practical client-side. Expect good results on sparse or
+vocal-forward material and spoken word, thin results on a loud full-band chorus.
+
+That's why alignment mode matters: even sparse anchors pin your real lyrics to the
+right places, and interpolation covers the rest. When confidence is low the panel says
+so, and `[` / `]` still nudge.
+
+Implementation notes, both of which were found the hard way and are commented in the
+source:
+
+- WebGPU is probed by actually requesting an adapter. Headless and locked-down
+  browsers expose `navigator.gpu` but return no adapter, and asking onnxruntime for a
+  WebGPU session in that state leaves its backend registry unusable for the WASM retry.
+- Audio is fed to the model one sub-30s window at a time, cut at the quietest nearby
+  frame, with each window's timestamps rebased by hand. The pipeline's own chunking
+  corrupts word timestamps on the `_timestamped` exports
+  ([transformers.js#1358](https://github.com/huggingface/transformers.js/issues/1358)) —
+  stamps ran past the end of the audio and overlapped each other.
+- The q8 decoder won't load (an onnxruntime `MatMulNBits` scale bug), so q4 is tried
+  first on both backends with fp32 as the safety net.
+
 ## No file handy?
 
 - **Demo beat** — synthesises a generic 117 BPM groove in-browser and plays it. Good
@@ -74,6 +142,9 @@ instantly and survives seeking.
 
 Everything is also on the control panel: palette, intensity, per-group icon toggles
 (Chess / Origami / Diablo), bloom, light floor, karaoke.
+
+Shift-clicking **Auto-sync** skips the LRCLIB lookup and goes straight to on-device
+transcription — useful when the online match is for a different cut of the song.
 
 ## Visual style
 
@@ -146,11 +217,21 @@ notes still register. Beat intervals feed a median estimator for the BPM readout
 ## Files
 
 ```
-index.html      markup + control panel
-styles.css      UI chrome (glass panel, HUD, dropzone)
-app.js          everything else — audio, analysis, lyrics, rendering
-assets/         put your audio and .lrc here; sample.lrc included
+index.html          markup + control panel
+styles.css          UI chrome (glass panel, HUD, dropzone)
+app.js              audio, analysis, lyrics, rendering
+lyricsync.js        auto-sync — LRCLIB lookup, audio prep, transcript alignment
+whisper.worker.js   speech recognition off the main thread (module worker)
+assets/             put your audio and .lrc here; sample.lrc included
 ```
+
+`app.js` stays a self-contained IIFE; `lyricsync.js` talks to it through the small
+`window.Resonant` bridge at the bottom of `app.js` and nothing else.
+
+The visualizer itself still has zero dependencies. Auto-sync is the one part that
+reaches out: LRCLIB for tier 1, and the transformers.js / Hugging Face CDNs for tier 2.
+Both load lazily, only when you press the button — nothing is fetched otherwise, and
+the rest of the app works offline exactly as before.
 
 ## Browser support
 
