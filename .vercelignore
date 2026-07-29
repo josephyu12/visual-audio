@@ -1,0 +1,13 @@
+# Local audio/lyrics — not served publicly.
+# The app has no hardcoded references to these; users drag in their own files.
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.ogg
+Michael-Jackson-Billie-Jean.lrc
+
+# Tooling
+.gstack/
+.DS_Store
+README.md
