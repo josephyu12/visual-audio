@@ -23,8 +23,7 @@ python3 -m http.server 8777
 3. **Load lyrics (.lrc)** → pick a synced lyric file.
 4. Hit **Fullscreen**. The UI fades out on its own while the track plays.
 
-The `Billie Neon` palette and the light-up perspective floor are the defaults, which
-is the look this was built around.
+The `NCS Blue` palette and the light-up perspective floor are the defaults.
 
 ### About the audio and lyric files
 
@@ -76,17 +75,47 @@ instantly and survives seeking.
 Everything is also on the control panel: palette, intensity, per-group icon toggles
 (Chess / Origami / Diablo), bloom, light floor, karaoke.
 
+## Visual style
+
+Modelled on [NCS_Spectrum_GLava](https://github.com/Roonil/NCS_Spectrum_GLava). Its
+base particle colour is `vec3(0.0118, 0.1412, 0.3412)` — RGB(3, 36, 87), the
+signature NCS deep blue — and the palettes here are built around that hue.
+
+The centrepiece is the same idea as that shader: a **particle sphere** rather than a
+bar fan. Points are distributed on a unit sphere by Fibonacci spiral, displaced
+radially by a trig noise field driven by the audio, projected with perspective, and
+drawn additively at low alpha so overlapping particles accumulate into a bright core
+and a dense limb.
+
 ## What's on screen
 
+- **Particle sphere** — up to 17,000 points, depth-shaded, tumbling slowly, radius
+  driven by bass.
 - **Radial spectrum** — 128 log-spaced frequency bands, mirrored, fast-attack /
-  slow-release so it reads as motion rather than noise.
-- **Waveform ribbon** — the live time-domain signal wrapped into a circle.
-- **Light-up floor** — perspective grid whose tiles flare on detected beats.
+  slow-release so it reads as motion rather than noise. Flat caps, hard bright tips.
+- **Waveform ring** — the live time-domain signal wrapped into a circle.
+- **Light-up floor** — perspective grid whose tiles flare on detected beats. The
+  grid lines carry the structure; the fills only tint it.
 - **Icon spew** — chess pieces (Unicode glyphs), origami crane / paper plane /
-  folded star, and diabolos, all drawn as vector paths with two-tone facets.
+  folded star, and diabolos, as vector paths with two-tone facets.
 - **Karaoke** — active line with a wipe-fill, previous line receding, next line
   previewed.
-- **Bloom** — quarter-res blur pass composited additively.
+
+## On staying sharp
+
+Fuzziness in a visualizer comes from stacking soft things. Specific choices here:
+
+- **Icons and lyrics render after the bloom composite**, straight onto the visible
+  canvas, so neither ever picks up blur. This is the single biggest factor.
+- Each icon draws a hard offset silhouette first, then its body, then a bright rim,
+  so it separates from the background instead of glowing into it.
+- Bloom is a quarter-res 2px blur at 0.30 alpha, not a wide soft wash.
+- There are no large-radius soft gradients anywhere except one tight glow behind the
+  sphere. An earlier version had drifting nebula blobs; they were the main source of
+  screen-wide haze and are gone.
+- Bars use flat caps with a hard bright terminator rather than fading out.
+- Stars and sphere particles are `fillRect`, not `arc` — crisper at small sizes and
+  substantially cheaper.
 
 ## How the beat detection works
 
@@ -103,9 +132,12 @@ notes still register. Beat intervals feed a median estimator for the BPM readout
   without bound over a 5-minute song.
 - Frame delta is clamped at 50 ms, so backgrounding the tab doesn't teleport
   everything off screen when you come back.
-- An adaptive quality governor watches the frame rate and steps bar count, star
-  count, floor depth, and bloom up or down to hold 60 fps. Current tier shows as
-  `q:` in the top-right.
+- An adaptive quality governor watches the frame rate and steps sphere particle
+  count, bar count, star count, floor depth, and bloom up or down to hold 60 fps.
+  Current tier shows as `q:` in the top-right.
+- The sphere counting-sorts its particles into ten depth bands each frame so the
+  canvas fill colour is set ten times per frame instead of once per particle. That
+  is what makes a five-figure particle count affordable in Canvas 2D.
 - Audio streams through a `MediaElementSource` rather than decoding the whole file
   into memory, so long tracks seek instantly and cost nothing extra in RAM.
 - `AudioContext` is created lazily on first interaction and resumed on every gesture,

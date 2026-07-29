@@ -21,24 +21,26 @@ var CFG = {
   maxParticles: 1100,
   maxRings: 28,
   minBeatGap: 0.22,      // seconds; 117 BPM = 0.513s/beat, this allows 8ths
-  trailDecay: 0.22,
-  bloomAlpha: 0.62,
+  trailDecay: 0.40,
+  bloomAlpha: 0.30,
   lyricFallbackLead: 0.35
 };
 
 // Quality tiers, walked up/down by the adaptive governor.
 var TIERS = [
-  { name: 'low',    bars: 64,  stars: 90,  bloom: false, floorRows: 14, iconCap: 90  },
-  { name: 'medium', bars: 96,  stars: 160, bloom: true,  floorRows: 18, iconCap: 160 },
-  { name: 'high',   bars: 128, stars: 240, bloom: true,  floorRows: 22, iconCap: 260 }
+  { name: 'low',    bars: 64,  stars: 70,  bloom: false, floorRows: 16, iconCap: 80,  sphere: 5000  },
+  { name: 'medium', bars: 96,  stars: 120, bloom: true,  floorRows: 20, iconCap: 140, sphere: 10000 },
+  { name: 'high',   bars: 128, stars: 170, bloom: true,  floorRows: 24, iconCap: 220, sphere: 17000 }
 ];
 
+// Anchored on the NCS_Spectrum_GLava palette: its base particle colour is
+// vec3(0.0118, 0.1412, 0.3412) = rgb(3,36,87) = hsl(217, 93%, 18%).
 var PALETTES = [
-  { name: 'Billie Neon',  h0: 190, h1: 320, accent: 300, bg: [248, 60, 4],  floor: 205 },
-  { name: 'Moonwalk',     h0: 200, h1: 220, accent: 195, bg: [220, 18, 5],  floor: 210 },
-  { name: 'Thriller',     h0: 355, h1: 45,  accent: 20,  bg: [350, 55, 5],  floor: 15  },
-  { name: 'Origami',      h0: 150, h1: 330, accent: 265, bg: [258, 40, 6],  floor: 285 },
-  { name: 'Jade Diablo',  h0: 120, h1: 195, accent: 155, bg: [172, 45, 4],  floor: 150 }
+  { name: 'NCS Blue',   h0: 196, h1: 240, accent: 202, bg: [217, 86, 3], floor: 210, core: 208 },
+  { name: 'NCS Violet', h0: 252, h1: 306, accent: 278, bg: [258, 72, 3], floor: 272, core: 266 },
+  { name: 'NCS Green',  h0: 136, h1: 182, accent: 158, bg: [170, 68, 3], floor: 156, core: 150 },
+  { name: 'Ember',      h0: 348, h1: 42,  accent: 16,  bg: [354, 68, 3], floor: 14,  core: 10  },
+  { name: 'Ice',        h0: 176, h1: 212, accent: 188, bg: [201, 58, 3], floor: 192, core: 190 }
 ];
 
 var ICON_TYPES = ['king', 'queen', 'rook', 'bishop', 'knight', 'pawn',
@@ -142,6 +144,7 @@ function resize() {
 
   buildStars();
   buildFloor();
+  buildSphere();
   AN.buildBars();
   updateReserve();
 }
@@ -499,7 +502,7 @@ var AN = {
       this.lastBeatT = t;
     }
     this.pulse += ((this.beat ? this.beatStrength : 0) - this.pulse) * smoothK(0.20, dt);
-    this.hueDrift += dt * (6 + this.level * 26);
+    this.hueDrift = (this.hueDrift + dt * (6 + this.level * 26)) % 100000;
     this.bpmShown += (this.bpm - this.bpmShown) * smoothK(0.05, dt);
   },
 
@@ -668,13 +671,128 @@ var LY = {
 
 /* -------------------------------------------------------------- entities -- */
 
+/* ------------------------------------------------- NCS-style particle sphere -- */
+/* A Fibonacci-distributed point cloud on a unit sphere, radially displaced by a
+   cheap trig noise field and drawn additively at low alpha, so overlapping
+   particles accumulate into the bright core the NCS visualiser is known for. */
+
+var SPHERE_BANDS = 10;
+var sphere = { n: 0, x: null, y: null, z: null, seed: null,
+               px: null, py: null, ps: null, pb: null };
+
+function buildSphere() {
+  var n = tier().sphere;
+  sphere.n = n;
+  sphere.x = new Float32Array(n);
+  sphere.y = new Float32Array(n);
+  sphere.z = new Float32Array(n);
+  sphere.seed = new Float32Array(n);
+  // Scratch buffers: projection is computed once, then drawn in depth bands.
+  sphere.px = new Float32Array(n);
+  sphere.py = new Float32Array(n);
+  sphere.ps = new Float32Array(n);
+  sphere.pb = new Int8Array(n);
+  sphere.order = new Int32Array(n);
+  sphere.counts = new Int32Array(SPHERE_BANDS);
+  sphere.offsets = new Int32Array(SPHERE_BANDS + 1);
+  sphere.cursor = new Int32Array(SPHERE_BANDS);
+  var golden = Math.PI * (1 + Math.sqrt(5));
+  for (var i = 0; i < n; i++) {
+    var k = i + 0.5;
+    var phi = Math.acos(1 - 2 * k / n);
+    var theta = golden * k;
+    var sp = Math.sin(phi);
+    sphere.x[i] = Math.cos(theta) * sp;
+    sphere.y[i] = Math.sin(theta) * sp;
+    sphere.z[i] = Math.cos(phi);
+    sphere.seed[i] = Math.random() * 6.283;
+  }
+}
+
+function drawSphere(c, t) {
+  var P = pal();
+  var cx = W * 0.5, cy = H * 0.46;
+  var R = Math.min(W, H) * 0.175 * (1 + AN.bands.bass * 0.30 + AN.pulse * 0.10);
+
+  // Slow tumble.
+  var ry = t * 0.11, rx = Math.sin(t * 0.07) * 0.38;
+  var cy1 = Math.cos(ry), sy1 = Math.sin(ry);
+  var cx1 = Math.cos(rx), sx1 = Math.sin(rx);
+
+  var disp = 0.06 + AN.level * 0.42 + AN.pulse * 0.30;   // fractalAudioMixing analogue
+  var camZ = 3.0;
+  var pSize = Math.max(1, 2.3 * U * 1.5);
+  var n = sphere.n;
+  var counts = sphere.counts, offsets = sphere.offsets,
+      cursor = sphere.cursor, order = sphere.order;
+  for (var q = 0; q < SPHERE_BANDS; q++) counts[q] = 0;
+
+  // Pass 1: project every particle, bucket it by depth.
+  for (var i = 0; i < n; i++) {
+    var x = sphere.x[i], y = sphere.y[i], z = sphere.z[i];
+
+    // rotate about Y then X
+    var x1 = x * cy1 + z * sy1;
+    var z1 = -x * sy1 + z * cy1;
+    var y1 = y * cx1 - z1 * sx1;
+    var z2 = y * sx1 + z1 * cx1;
+
+    // radial displacement field
+    var nse = Math.sin(x1 * 4.6 + t * 0.9 + sphere.seed[i]) *
+              Math.sin(y1 * 4.6 - t * 0.7) *
+              Math.sin(z2 * 4.6 + t * 0.5);
+    var rn = 1 + nse * disp;
+
+    // perspective projection
+    var pz = camZ + z2 * rn;
+    if (pz < 0.35) { sphere.pb[i] = -1; continue; }
+    var s = camZ / pz;
+
+    var depth = clamp((s - 0.72) / 0.85, 0, 1);
+    sphere.px[i] = cx + x1 * rn * R * s;
+    sphere.py[i] = cy + y1 * rn * R * s;
+    sphere.ps[i] = pSize * (0.55 + depth * 0.95);
+    var band = Math.min(SPHERE_BANDS - 1, (depth * SPHERE_BANDS) | 0);
+    sphere.pb[i] = band;
+    counts[band]++;
+  }
+
+  // Pass 2: counting sort into depth-band runs, so pass 3 sets a fill colour
+  // only 10 times instead of once per particle. That single change is what lets
+  // this carry a five-figure particle count at 60fps.
+  offsets[0] = 0;
+  for (var b2 = 0; b2 < SPHERE_BANDS; b2++) {
+    offsets[b2 + 1] = offsets[b2] + counts[b2];
+    cursor[b2] = offsets[b2];
+  }
+  for (var k = 0; k < n; k++) {
+    var bb = sphere.pb[k];
+    if (bb >= 0) order[cursor[bb]++] = k;
+  }
+
+  // Pass 3: draw each band as one contiguous run.
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  for (var b = 0; b < SPHERE_BANDS; b++) {
+    var d = (b + 0.5) / SPHERE_BANDS;
+    c.fillStyle = hsla(P.core + d * 30 - 14, 96, 48 + d * 40,
+                       0.30 * (0.28 + d * 1.55));
+    for (var m = offsets[b]; m < offsets[b + 1]; m++) {
+      var idx = order[m];
+      var sz = sphere.ps[idx];
+      c.fillRect(sphere.px[idx] - sz * 0.5, sphere.py[idx] - sz * 0.5, sz, sz);
+    }
+  }
+  c.restore();
+}
+
 function buildStars() {
   var n = tier().stars;
   stars.length = 0;
   for (var i = 0; i < n; i++) {
     stars.push({
       x: Math.random() * W, y: Math.random() * H,
-      z: rand(0.25, 1), r: rand(0.6, 2.1) * U * 1.2, tw: rand(0, Math.PI * 2)
+      z: rand(0.25, 1), r: rand(0.5, 1.3) * U * 1.2, tw: rand(0, Math.PI * 2)
     });
   }
 }
@@ -749,21 +867,21 @@ function onBeat(strength) {
   spawnRing(cx, cy, P.accent + rand(-30, 30), strength);
 
   // Radial burst of icons from the core.
-  var count = Math.round((3 + strength * 7) * inten);
+  var count = Math.round((2 + strength * 5) * inten);
   for (var i = 0; i < count; i++) {
     var a = rand(0, Math.PI * 2);
-    var sp = (170 + Math.random() * 330) * (0.6 + strength) * U;
-    spawnIcon(cx + Math.cos(a) * 40 * U, cy + Math.sin(a) * 40 * U,
+    var sp = (165 + Math.random() * 300) * (0.6 + strength) * U;
+    spawnIcon(cx + Math.cos(a) * 150 * U, cy + Math.sin(a) * 150 * U,
       Math.cos(a) * sp, Math.sin(a) * sp - 50 * U,
-      rand(26, 58) * U * (0.8 + strength * 0.5), rand(2.6, 4.8));
+      rand(40, 82) * U * (0.85 + strength * 0.4), rand(2.6, 4.8));
   }
 
   // Fountain from the lower edge.
-  var fc = Math.round((1 + strength * 3) * inten);
+  var fc = Math.round((1 + strength * 2) * inten);
   for (var f = 0; f < fc; f++) {
-    spawnIcon(rand(W * 0.1, W * 0.9), H + 40 * U,
+    spawnIcon(rand(W * 0.1, W * 0.9), H + 50 * U,
       rand(-70, 70) * U, -rand(420, 640) * U * (0.7 + strength * 0.5),
-      rand(22, 42) * U, rand(2.8, 4.4));
+      rand(34, 60) * U, rand(2.8, 4.4));
   }
 
   // Sparks.
@@ -826,8 +944,8 @@ function updateEntities(t, dt) {
   ambientAcc += rate * dt;
   while (ambientAcc >= 1) {
     ambientAcc -= 1;
-    spawnIcon(rand(0, W), -60 * U, rand(-35, 35) * U, rand(40, 110) * U,
-      rand(18, 34) * U, rand(4, 7));
+    spawnIcon(rand(0, W), -70 * U, rand(-35, 35) * U, rand(40, 110) * U,
+      rand(28, 48) * U, rand(4, 7));
   }
 }
 var ambientAcc = 0;
@@ -871,8 +989,11 @@ function pathDiabloCup(c, sign) {
   c.lineTo(sign * 0.07, 0.075); c.lineTo(sign * 0.44, 0.36); c.closePath();
 }
 
-function drawIconShape(c, o, alpha) {
-  var P = pal();
+/* Icons are drawn in three passes so they read as solid objects rather than
+   glowing smudges: a hard offset silhouette for separation from the busy
+   background, then the two-tone body, then a bright rim. `flat` renders the
+   whole shape in one colour for the silhouette pass. */
+function drawIconShape(c, o, alpha, flat) {
   var h = o.hue;
 
   if (CHESS_GLYPH[o.type]) {
@@ -880,10 +1001,19 @@ function drawIconShape(c, o, alpha) {
     c.font = fs + 'px ' + CHESS_FONT;
     c.textAlign = 'center';
     c.textBaseline = 'middle';
-    c.fillStyle = hsla(h, 90, 64, alpha);
+    if (flat) {
+      c.lineJoin = 'round';
+      c.lineWidth = o.size * 0.14;
+      c.strokeStyle = flat;
+      c.strokeText(CHESS_GLYPH[o.type], 0, 0);
+      c.fillStyle = flat;
+      c.fillText(CHESS_GLYPH[o.type], 0, 0);
+      return;
+    }
+    c.fillStyle = hsla(h, 96, 70, alpha);
     c.fillText(CHESS_GLYPH[o.type], 0, 0);
-    c.lineWidth = Math.max(1, o.size * 0.03);
-    c.strokeStyle = hsla(h + 30, 100, 88, alpha * 0.55);
+    c.lineWidth = Math.max(1, o.size * 0.035);
+    c.strokeStyle = hsla(h + 25, 100, 93, alpha);
     c.strokeText(CHESS_GLYPH[o.type], 0, 0);
     return;
   }
@@ -892,32 +1022,53 @@ function drawIconShape(c, o, alpha) {
   c.scale(o.size, o.size);
   c.lineJoin = 'round';
 
+  if (flat) {
+    c.fillStyle = flat;
+    c.strokeStyle = flat;
+    c.lineWidth = 0.14;
+    if (o.type === 'crane') {
+      pathCrane(c); c.stroke(); c.fill();
+      pathCraneWingUp(c); c.stroke(); c.fill();
+      pathCraneWingDown(c); c.stroke(); c.fill();
+    } else if (o.type === 'plane') {
+      pathPlane(c); c.stroke(); c.fill();
+    } else if (o.type === 'star') {
+      pathStar(c); c.stroke(); c.fill();
+    } else if (o.type === 'diablo') {
+      pathDiabloCup(c, -1); c.stroke(); c.fill();
+      pathDiabloCup(c, 1); c.stroke(); c.fill();
+      c.fillRect(-0.09, -0.062, 0.18, 0.124);
+    }
+    c.restore();
+    return;
+  }
+
   if (o.type === 'crane') {
-    c.fillStyle = hsla(h, 88, 62, alpha);
+    c.fillStyle = hsla(h, 92, 60, alpha);
     pathCrane(c); c.fill();
-    c.fillStyle = hsla(h + 18, 95, 78, alpha * 0.95);
+    c.fillStyle = hsla(h + 16, 98, 82, alpha);
     pathCraneWingUp(c); c.fill();
-    c.fillStyle = hsla(h - 14, 90, 52, alpha * 0.95);
+    c.fillStyle = hsla(h - 16, 94, 46, alpha);
     pathCraneWingDown(c); c.fill();
-    c.strokeStyle = hsla(h + 40, 100, 92, alpha * 0.5);
-    c.lineWidth = 0.018;
+    c.strokeStyle = hsla(h + 35, 100, 96, alpha * 0.9);
+    c.lineWidth = 0.026;
     c.beginPath(); c.moveTo(-0.10, -0.10); c.lineTo(0.06, -0.50);
     c.moveTo(-0.10, -0.02); c.lineTo(0.02, 0.44); c.stroke();
   } else if (o.type === 'plane') {
-    c.fillStyle = hsla(h, 85, 66, alpha);
+    c.fillStyle = hsla(h, 90, 52, alpha);
     pathPlane(c); c.fill();
-    c.fillStyle = hsla(h + 20, 95, 84, alpha * 0.9);
+    c.fillStyle = hsla(h + 18, 98, 84, alpha);
     c.beginPath();
     c.moveTo(0.50, 0.00); c.lineTo(-0.48, -0.30); c.lineTo(-0.26, 0.00); c.closePath();
     c.fill();
-    c.strokeStyle = hsla(h + 50, 100, 94, alpha * 0.6);
-    c.lineWidth = 0.02;
+    c.strokeStyle = hsla(h + 45, 100, 97, alpha);
+    c.lineWidth = 0.028;
     c.beginPath(); c.moveTo(0.50, 0); c.lineTo(-0.34, 0); c.stroke();
   } else if (o.type === 'star') {
-    c.fillStyle = hsla(h, 88, 64, alpha);
+    c.fillStyle = hsla(h, 94, 66, alpha);
     pathStar(c); c.fill();
-    c.strokeStyle = hsla(h + 35, 100, 90, alpha * 0.55);
-    c.lineWidth = 0.02;
+    c.strokeStyle = hsla(h + 30, 100, 95, alpha * 0.9);
+    c.lineWidth = 0.026;
     for (var i = 0; i < 8; i++) {
       var a = (i / 8) * Math.PI * 2 - Math.PI / 2;
       c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(a) * 0.5, Math.sin(a) * 0.5); c.stroke();
@@ -925,54 +1076,42 @@ function drawIconShape(c, o, alpha) {
   } else if (o.type === 'diablo') {
     // Chinese yo-yo: two cups on a shared axle, spinning.
     var squash = 0.55 + 0.45 * Math.abs(Math.cos(o.wob * 2));
-    c.save(); c.scale(1, 1);
-    c.fillStyle = hsla(h, 88, 58, alpha);
+    c.fillStyle = hsla(h, 92, 54, alpha);
     pathDiabloCup(c, -1); c.fill();
-    c.fillStyle = hsla(h + 24, 92, 66, alpha);
+    c.fillStyle = hsla(h + 22, 96, 68, alpha);
     pathDiabloCup(c, 1); c.fill();
-    // Rims.
-    c.fillStyle = hsla(h + 45, 95, 80, alpha * 0.95);
+    c.fillStyle = hsla(h + 42, 100, 86, alpha);
     c.beginPath(); c.ellipse(-0.44, 0, 0.075 * squash, 0.36, 0, 0, Math.PI * 2); c.fill();
     c.beginPath(); c.ellipse(0.44, 0, 0.075 * squash, 0.36, 0, 0, Math.PI * 2); c.fill();
-    // Axle.
-    c.fillStyle = hsla(h + 60, 20, 88, alpha * 0.9);
+    c.fillStyle = hsla(h + 60, 25, 92, alpha);
     c.fillRect(-0.09, -0.062, 0.18, 0.124);
-    // Spin streaks.
-    c.strokeStyle = hsla(h + 55, 100, 92, alpha * 0.4);
-    c.lineWidth = 0.022;
-    c.beginPath();
-    c.arc(-0.30, 0, 0.24, -0.7 + o.wob, 0.5 + o.wob);
-    c.arc(0.30, 0, 0.24, 2.6 - o.wob, 3.8 - o.wob);
-    c.stroke();
-    c.restore();
   }
   c.restore();
 }
 
 function drawIcons(c) {
   c.save();
+  c.globalCompositeOperation = 'source-over';
   for (var i = 0; i < icons.length; i++) {
     var o = icons[i]; if (!o.active) continue;
     var lifeT = o.life / o.maxLife;
-    var alpha = clamp(lifeT * 1.6, 0, 1) * clamp((1 - lifeT) * 6, 0, 1);
+    var alpha = clamp(lifeT * 1.8, 0, 1) * clamp((1 - lifeT) * 7, 0, 1);
     if (alpha <= 0.01) continue;
-    var pulseScale = 1 + AN.pulse * 0.10;
+    var pulseScale = 1 + AN.pulse * 0.09;
 
     c.save();
     c.translate(o.x, o.y);
     c.rotate(o.rot);
     c.scale(pulseScale, pulseScale);
 
-    // Soft additive halo behind the shape.
-    c.globalCompositeOperation = 'lighter';
-    var g = c.createRadialGradient(0, 0, 0, 0, 0, o.size * 1.15);
-    g.addColorStop(0, hsla(o.hue, 100, 62, alpha * 0.42));
-    g.addColorStop(1, hsla(o.hue, 100, 50, 0));
-    c.fillStyle = g;
-    c.beginPath(); c.arc(0, 0, o.size * 1.15, 0, Math.PI * 2); c.fill();
+    // 1. hard silhouette, offset — separates the icon from whatever is behind it
+    c.save();
+    c.translate(o.size * 0.05, o.size * 0.06);
+    drawIconShape(c, o, alpha, 'rgba(2,6,20,' + (alpha * 0.85).toFixed(3) + ')');
+    c.restore();
 
-    c.globalCompositeOperation = 'source-over';
-    drawIconShape(c, o, alpha);
+    // 2. body + 3. rim
+    drawIconShape(c, o, alpha, null);
     c.restore();
   }
   c.restore();
@@ -982,11 +1121,11 @@ function drawIcons(c) {
 
 function drawBackground(c) {
   var P = pal();
-  var lift = AN.bands.bass * 12;
+  var lift = AN.bands.bass * 6;
   var g = c.createRadialGradient(W * 0.5, H * 0.46, 0, W * 0.5, H * 0.5, Math.max(W, H) * 0.78);
-  g.addColorStop(0, hsla(P.bg[0] + AN.hueDrift * 0.05, P.bg[1], P.bg[2] + 9 + lift, 1));
-  g.addColorStop(0.55, hsla(P.bg[0] + 10, P.bg[1], P.bg[2] + 2 + lift * 0.3, 1));
-  g.addColorStop(1, hsla(P.bg[0] - 10, P.bg[1] * 0.7, Math.max(0, P.bg[2] - 3), 1));
+  g.addColorStop(0, hsla(P.bg[0], P.bg[1], P.bg[2] + 5 + lift, 1));
+  g.addColorStop(0.55, hsla(P.bg[0] + 6, P.bg[1], P.bg[2] + 1 + lift * 0.3, 1));
+  g.addColorStop(1, hsla(P.bg[0] - 6, P.bg[1] * 0.8, Math.max(0, P.bg[2] - 2), 1));
   c.fillStyle = g;
   c.fillRect(0, 0, W, H);
 }
@@ -999,35 +1138,29 @@ function drawStars(c, t) {
     var s = stars[i];
     var a = clamp((0.20 + 0.5 * Math.sin(t * 1.6 + s.tw)) * tw * s.z, 0, 1);
     if (a <= 0.02) continue;
-    c.fillStyle = hsla(pal().h0 + s.z * 60, 60, 92, a);
-    c.beginPath();
-    c.arc(s.x, s.y, s.r * (0.7 + AN.pulse * 0.6), 0, Math.PI * 2);
-    c.fill();
+    // Square pixels, not arcs — crisper at this size and much cheaper.
+    var sr = s.r * (0.8 + AN.pulse * 0.4);
+    c.fillStyle = hsla(pal().h0 + s.z * 40, 70, 90, a);
+    c.fillRect(s.x - sr, s.y - sr, sr * 2, sr * 2);
   }
   c.restore();
 }
 
-function drawNebula(c, t) {
+// A single tight glow seated behind the sphere. The old drifting nebula blobs
+// were the main source of screen-wide haze, so there is deliberately no
+// large-radius soft fill any more.
+function drawCoreGlow(c) {
   var P = pal();
-  var blobs = [
-    { b: AN.bands.bass, h: P.h0, ox: 0.28, oy: 0.34, sp: 0.17 },
-    { b: AN.bands.mid, h: (P.h0 + P.h1) / 2, ox: 0.72, oy: 0.40, sp: -0.13 },
-    { b: AN.bands.treble, h: P.h1, ox: 0.50, oy: 0.68, sp: 0.21 }
-  ];
+  var cx = W * 0.5, cy = H * 0.46;
+  var r = Math.min(W, H) * (0.24 + AN.bands.bass * 0.10);
   c.save();
   c.globalCompositeOperation = 'lighter';
-  for (var i = 0; i < blobs.length; i++) {
-    var b = blobs[i];
-    var x = W * b.ox + Math.cos(t * b.sp + i) * W * 0.10;
-    var y = H * b.oy + Math.sin(t * b.sp * 1.3 + i) * H * 0.09;
-    var r = (170 + b.b * 460) * U * (1 + AN.pulse * 0.22);
-    var g = c.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, hsla(b.h + AN.hueDrift * 0.12, 92, 55, 0.28 + b.b * 0.34));
-    g.addColorStop(0.45, hsla(b.h + 25, 90, 45, 0.10 + b.b * 0.13));
-    g.addColorStop(1, hsla(b.h + 45, 88, 40, 0));
-    c.fillStyle = g;
-    c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
-  }
+  var g = c.createRadialGradient(cx, cy, 0, cx, cy, r);
+  g.addColorStop(0, hsla(P.core + 8, 96, 56, 0.50 + AN.level * 0.28));
+  g.addColorStop(0.5, hsla(P.core + 14, 94, 44, 0.20));
+  g.addColorStop(1, hsla(P.core + 22, 92, 36, 0));
+  c.fillStyle = g;
+  c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill();
   c.restore();
 }
 
@@ -1062,26 +1195,32 @@ function drawFloor(c, t) {
 
       var idx = r * floorCols + col;
       var lit = floorLight[idx];
-      var base = 0.030 + 0.055 * AN.bands.lowMid;
-      var v = base + lit * 0.85;
-      var fade = clamp(1 - r / floorRows, 0.12, 1);
-      var a = clamp(v * fade * 1.5, 0, 0.92);
-      if (a <= 0.012) continue;
+      var base = 0.010 + 0.020 * AN.bands.lowMid;
+      var v = base + lit * 0.34;
+      var fade = clamp(1 - r / floorRows, 0.10, 1);
+      var a = clamp(v * fade * 1.3, 0, 0.44);
 
-      c.fillStyle = hsla(P.floor + lit * 55 + AN.hueDrift * 0.06, 90,
-        clamp(38 + lit * 42, 0, 92), a);
       c.beginPath();
       c.moveTo(xn0, yNear); c.lineTo(xn1, yNear);
       c.lineTo(xf1, yFar); c.lineTo(xf0, yFar);
       c.closePath();
-      c.fill();
+
+      if (a > 0.012) {
+        c.fillStyle = hsla(P.floor + lit * 40, 92, clamp(30 + lit * 38, 0, 84), a);
+        c.fill();
+      }
+      // The grid lines carry the structure; the fills only tint it.
+      c.strokeStyle = hsla(P.floor + 18, 100, 74,
+        clamp((0.05 + lit * 0.85) * fade, 0, 0.85));
+      c.lineWidth = Math.max(0.7, 1.0 * U);
+      c.stroke();
     }
   }
 
   // Horizon haze to hide the vanishing point.
   var hg = c.createLinearGradient(0, horizon - H * 0.10, 0, horizon + H * 0.05);
   hg.addColorStop(0, hsla(P.floor, 90, 60, 0));
-  hg.addColorStop(0.7, hsla(P.floor, 95, 62, 0.10 + AN.bands.bass * 0.20));
+  hg.addColorStop(0.7, hsla(P.floor, 95, 62, 0.05 + AN.bands.bass * 0.10));
   hg.addColorStop(1, hsla(P.floor, 95, 62, 0));
   c.fillStyle = hg;
   c.fillRect(0, horizon - H * 0.10, W, H * 0.15);
@@ -1091,14 +1230,14 @@ function drawFloor(c, t) {
 function drawBars(c) {
   var P = pal();
   var cx = W * 0.5, cy = H * 0.46;
-  var inner = Math.min(W, H) * 0.145 * (1 + AN.pulse * 0.09);
+  var inner = Math.min(W, H) * 0.235 * (1 + AN.pulse * 0.05);
   var n = AN.nBars;
   var span = Math.PI * 2;
-  var maxLen = Math.min(W, H) * 0.27;
+  var maxLen = Math.min(W, H) * 0.20;
 
   c.save();
   c.globalCompositeOperation = 'lighter';
-  c.lineCap = 'round';
+  c.lineCap = 'butt';
   for (var i = 0; i < n; i++) {
     var v = clamp(AN.bars[i], 0, 1.35);
     if (v <= 0.005) continue;
@@ -1106,19 +1245,26 @@ function drawBars(c) {
     var frac = i / n;
     var a = -Math.PI / 2 + frac * span * 0.5;
     var len = v * maxLen;
-    var hue = P.h0 + frac * ((P.h1 - P.h0 + 360) % 360) + AN.hueDrift * 0.1;
-    var lw = Math.max(1.2, (Math.min(W, H) * 0.0075) * (0.7 + v * 0.5));
+    // Bounded shimmer only. An unbounded drift term here would rotate the bars
+    // off-palette over the course of a long track.
+    var hue = P.h0 + frac * ((P.h1 - P.h0 + 360) % 360) +
+              Math.sin(AN.hueDrift * 0.02) * 8;
+    var lw = Math.max(1.2, (Math.min(W, H) * 0.0052) * (0.85 + v * 0.35));
 
     for (var m = 0; m < 2; m++) {
       var ang = m === 0 ? a : -Math.PI - a;
       var x0 = cx + Math.cos(ang) * inner, y0 = cy + Math.sin(ang) * inner;
       var x1 = cx + Math.cos(ang) * (inner + len), y1 = cy + Math.sin(ang) * (inner + len);
       var g = c.createLinearGradient(x0, y0, x1, y1);
-      g.addColorStop(0, hsla(hue, 95, 58, 0.30 + v * 0.4));
-      g.addColorStop(1, hsla(hue + 45, 100, 72, 0.85));
+      g.addColorStop(0, hsla(hue, 100, 50, 0.55 + v * 0.35));
+      g.addColorStop(1, hsla(hue + 30, 100, 76, 1));
       c.strokeStyle = g;
       c.lineWidth = lw;
       c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+
+      // Hard bright cap so each bar terminates in a defined point, not a fade.
+      c.fillStyle = hsla(hue + 40, 100, 88, 0.95);
+      c.fillRect(x1 - lw * 0.5, y1 - lw * 0.5, lw, lw);
     }
   }
   c.restore();
@@ -1127,12 +1273,12 @@ function drawBars(c) {
 function drawWave(c) {
   var P = pal();
   var cx = W * 0.5, cy = H * 0.46;
-  var base = Math.min(W, H) * 0.125;
+  var base = Math.min(W, H) * 0.222;
   var n = AN.wave.length;
 
   c.save();
   c.globalCompositeOperation = 'lighter';
-  c.lineWidth = Math.max(1.4, 2.6 * U);
+  c.lineWidth = Math.max(1.4, 2.0 * U);
   var g = c.createLinearGradient(cx - base, cy - base, cx + base, cy + base);
   g.addColorStop(0, hsla(P.h0 + 10, 100, 70, 0.95));
   g.addColorStop(0.5, hsla(P.accent, 100, 78, 0.95));
@@ -1143,7 +1289,7 @@ function drawWave(c) {
   for (var i = 0; i <= n; i++) {
     var idx = i % n;
     var ang = (idx / n) * Math.PI * 2 - Math.PI / 2;
-    var r = base + AN.wave[idx] * base * 0.62 * (1 + AN.pulse * 0.5);
+    var r = base + AN.wave[idx] * base * 0.16 * (1 + AN.pulse * 0.5);
     var x = cx + Math.cos(ang) * r, y = cy + Math.sin(ang) * r;
     if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
   }
@@ -1152,29 +1298,23 @@ function drawWave(c) {
   c.restore();
 }
 
+// Thin counter-rotating arcs riding just outside the sphere. No soft fill here —
+// the glow is drawn once, behind, by drawCoreGlow().
 function drawCore(c, t) {
   var P = pal();
   var cx = W * 0.5, cy = H * 0.46;
-  var r = Math.min(W, H) * 0.085 * (1 + AN.pulse * 0.30 + AN.bands.bass * 0.22);
+  var r = Math.min(W, H) * 0.20;
 
   c.save();
   c.globalCompositeOperation = 'lighter';
-  var g = c.createRadialGradient(cx, cy, 0, cx, cy, r * 2.4);
-  g.addColorStop(0, hsla(P.accent, 100, 92, 0.90));
-  g.addColorStop(0.28, hsla(P.accent + 20, 100, 66, 0.45));
-  g.addColorStop(1, hsla(P.accent + 40, 100, 55, 0));
-  c.fillStyle = g;
-  c.beginPath(); c.arc(cx, cy, r * 2.4, 0, Math.PI * 2); c.fill();
-
-  // Slowly counter-rotating arcs.
-  c.lineCap = 'round';
+  c.lineCap = 'butt';
   for (var i = 0; i < 3; i++) {
-    var rr = r * (1.35 + i * 0.30);
+    var rr = r * (1.06 + i * 0.13);
     var sp = (i % 2 === 0 ? 1 : -1) * (0.35 + i * 0.16);
     var a0 = t * sp + i * 2.1;
-    var sweep = 0.7 + AN.bands.mid * 1.6;
-    c.strokeStyle = hsla(P.h0 + i * 40 + AN.hueDrift * 0.15, 100, 74, 0.28 + AN.level * 0.5);
-    c.lineWidth = Math.max(1, (2.2 - i * 0.4) * U * 1.6);
+    var sweep = 0.55 + AN.bands.mid * 1.5;
+    c.strokeStyle = hsla(P.h0 + i * 26, 100, 72, 0.40 + AN.level * 0.45);
+    c.lineWidth = Math.max(1, (1.7 - i * 0.35) * U * 1.6);
     c.beginPath(); c.arc(cx, cy, rr, a0, a0 + sweep); c.stroke();
   }
   c.restore();
@@ -1270,10 +1410,11 @@ function drawLyrics(c) {
   var prog = wp >= 0 ? wp : LY.progress();
 
   // Unsung base text.
-  c.lineWidth = Math.max(2, px * 0.035);
-  c.strokeStyle = 'rgba(0,0,0,0.55)';
+  c.lineWidth = Math.max(2, px * 0.055);
+  c.lineJoin = 'round';
+  c.strokeStyle = 'rgba(2,6,20,0.80)';
   c.strokeText(line.text, 0, 0);
-  c.fillStyle = 'rgba(255,255,255,0.34)';
+  c.fillStyle = 'rgba(255,255,255,0.40)';
   c.fillText(line.text, 0, 0);
 
   // Sung portion, clipped to the wipe front.
@@ -1285,8 +1426,8 @@ function drawLyrics(c) {
   g.addColorStop(0, hsla(P.h0 + 10, 100, 78, 1));
   g.addColorStop(0.5, 'rgba(255,255,255,1)');
   g.addColorStop(1, hsla(P.accent, 100, 80, 1));
-  c.shadowColor = hsla(P.accent, 100, 60, 0.85);
-  c.shadowBlur = (14 + AN.pulse * 26) * U;
+  c.shadowColor = hsla(P.accent, 100, 60, 0.5);
+  c.shadowBlur = (5 + AN.pulse * 8) * U;
   c.fillStyle = g;
   c.fillText(line.text, 0, 0);
   c.restore();
@@ -1351,14 +1492,14 @@ function render(t, dt) {
   tctx.globalCompositeOperation = 'source-over';
   drawParticles(tctx);
   drawRings(tctx);
-  drawIcons(tctx);
 
-  // --- scene buffer
+  // --- scene buffer (everything that is allowed to bloom)
   sctx.globalCompositeOperation = 'source-over';
   drawBackground(sctx);
   drawStars(sctx, t);
-  drawNebula(sctx, t);
+  drawCoreGlow(sctx);
   if (opt.floor) drawFloor(sctx, t);
+  drawSphere(sctx, t);
   drawBars(sctx);
   drawWave(sctx);
   drawCore(sctx, t);
@@ -1367,8 +1508,6 @@ function render(t, dt) {
   sctx.drawImage(trailCv, 0, 0);
   sctx.globalCompositeOperation = 'source-over';
 
-  if (opt.lyrics) drawLyrics(sctx);
-
   // --- bloom
   var useBloom = opt.bloom && tier().bloom;
   if (useBloom) {
@@ -1376,7 +1515,7 @@ function render(t, dt) {
     bctx.globalCompositeOperation = 'source-over';
     bctx.clearRect(0, 0, bw, bh);
     if (blurSupported) {
-      bctx.filter = 'blur(' + (3.2).toFixed(1) + 'px)';
+      bctx.filter = 'blur(' + (2.0).toFixed(1) + 'px)';
       bctx.drawImage(sceneCv, 0, 0, bw, bh);
       bctx.filter = 'none';
     } else {
@@ -1404,15 +1543,20 @@ function render(t, dt) {
   if (flash > 0.01) {
     var P = pal();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = hsla(P.accent, 100, 60, flash * 0.10);
+    ctx.fillStyle = hsla(P.accent, 100, 60, flash * 0.08);
     ctx.fillRect(0, 0, W, H);
     ctx.globalCompositeOperation = 'source-over';
   }
-  var vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.max(W, H) * 0.76);
+  var vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.38, W / 2, H / 2, Math.max(W, H) * 0.78);
   vg.addColorStop(0, 'rgba(0,0,0,0)');
-  vg.addColorStop(1, 'rgba(0,0,0,0.62)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.45)');
   ctx.fillStyle = vg;
   ctx.fillRect(0, 0, W, H);
+
+  // Icons and lyrics render after the bloom composite, straight onto the visible
+  // canvas, so neither picks up any blur. This is what keeps them crisp.
+  drawIcons(ctx);
+  if (opt.lyrics) drawLyrics(ctx);
 }
 
 function governQuality() {
@@ -1430,6 +1574,7 @@ function applyTier() {
   AN.buildBars();
   buildStars();
   buildFloor();
+  buildSphere();
   $('tierName').textContent = tier().name;
   var cap = tier().iconCap;
   if (icons.length > cap) {
